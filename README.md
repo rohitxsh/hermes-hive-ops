@@ -20,6 +20,8 @@ hermes-restart-idle                                   # restart the gateway when
 Every step is idempotent and keeps a backup of what it changes (`*.bak-kit`). Run a single step with
 `--steps patches,config`. After every `hermes update`, run `setup/install.sh --steps patches` (the daily self-check
 tells you when an update dropped a patch).
+Before changing the kit, run `setup/test-vanilla.sh`: it installs the kit twice into a throwaway home holding
+vanilla Hermes and checks patches, tools, jobs and the self-check, without touching your real `~/.hermes`.
 
 ## Manual steps the installer can't do for you
 
