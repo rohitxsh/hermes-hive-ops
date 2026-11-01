@@ -1,0 +1,141 @@
+diff --git a/plugins/platforms/discord/adapter_slash_auth.py b/plugins/platforms/discord/adapter_slash_auth.py
+index ebb80b5cde..c623538990 100644
+--- a/plugins/platforms/discord/adapter_slash_auth.py
++++ b/plugins/platforms/discord/adapter_slash_auth.py
+@@ -1,12 +1,10 @@
+ """Slash-command authorization verdict for the Discord adapter: the on_message gates, side-effect free."""
+ from __future__ import annotations
+ 
+-from typing import Any, Callable, Optional, Tuple
++from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
+ 
+-try:
++if TYPE_CHECKING:
+     import discord
+-except ImportError:  # the adapter does not start without discord.py
+-    discord = None
+ 
+ 
+ class DiscordSlashAuthMixin:
+@@ -27,6 +25,13 @@ class DiscordSlashAuthMixin:
+         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
+         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
+         """
++        # The adapter loads its optional dependency after importing this mixin.
++        # Resolve it at use time rather than caching an early ImportError as None.
++        try:
++            import discord
++        except ImportError:
++            return (False, "discord.py unavailable")
++
+         chan_obj = getattr(interaction, "channel", None)
+         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+         channel_ids: set = set()
+diff --git a/tests/gateway/test_discord_slash_auth_dependencies.py b/tests/gateway/test_discord_slash_auth_dependencies.py
+new file mode 100644
+index 0000000000..734bf1a3a7
+--- /dev/null
++++ b/tests/gateway/test_discord_slash_auth_dependencies.py
+@@ -0,0 +1,102 @@
++"""Slash authorization must recover after Discord's optional dependency loads."""
++import builtins
++import importlib.util
++from pathlib import Path
++from types import ModuleType, SimpleNamespace
++
++import pytest
++
++from gateway.config import PlatformConfig
++from plugins.platforms.discord import adapter_slash_auth
++from plugins.platforms.discord.adapter import DiscordAdapter
++
++
++@pytest.fixture
++def imported_without_discord(monkeypatch):
++    original_import = builtins.__import__
++
++    def unavailable(name, *args, **kwargs):
++        if name == "discord" or name.startswith("discord."):
++            raise ImportError("discord.py is not available yet")
++        return original_import(name, *args, **kwargs)
++
++    spec = importlib.util.spec_from_file_location(
++        "_slash_auth_before_dependency", Path(adapter_slash_auth.__file__)
++    )
++    module = importlib.util.module_from_spec(spec)
++    with monkeypatch.context() as blocked:
++        blocked.setattr(builtins, "__import__", unavailable)
++        spec.loader.exec_module(module)
++    return module
++
++
++def make_adapter(module, monkeypatch):
++    for name in (
++        "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
++        "DISCORD_IGNORED_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS",
++        "DISCORD_DM_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
++    ):
++        monkeypatch.delenv(name, raising=False)
++
++    class Adapter(module.DiscordSlashAuthMixin, DiscordAdapter):
++        pass
++
++    adapter = Adapter(PlatformConfig(enabled=True, token="test-only"))
++    adapter._allowed_user_ids = {"42"}
++    adapter._allowed_role_ids = set()
++    adapter._client = SimpleNamespace(guilds=[])
++
++    # No pairing approval may silently authorize the denied-user cases.
++    monkeypatch.setattr("gateway.pairing.PairingStore.is_approved", lambda *args: False)
++    return adapter
++
++
++@pytest.mark.parametrize("channel_kind", ["guild", "thread", "dm"])
++@pytest.mark.parametrize("authorized", [True, False])
++def test_dependency_available_after_mixin_import(
++    imported_without_discord, monkeypatch, channel_kind, authorized,
++):
++    # The adapter's lazy dependency loader can make discord importable AFTER
++    # this mixin was imported. Use real classes (not a MagicMock isinstance).
++    discord = ModuleType("discord")
++    discord.DMChannel = type("DMChannel", (), {})
++    discord.Thread = type("Thread", (), {})
++    monkeypatch.setitem(__import__("sys").modules, "discord", discord)
++    adapter = make_adapter(imported_without_discord, monkeypatch)
++    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "100")
++    if channel_kind == "dm":
++        channel = discord.DMChannel()
++        channel.id = 200
++    elif channel_kind == "thread":
++        channel = discord.Thread()
++        channel.id = 101
++        channel.parent_id = 100
++    else:
++        channel = SimpleNamespace(id=100)
++    interaction = SimpleNamespace(
++        channel=channel, channel_id=channel.id,
++        user=SimpleNamespace(id=42 if authorized else 43, name="test-user"),
++        guild=None if channel_kind == "dm" else SimpleNamespace(id=1, get_member=lambda uid: None),
++    )
++    allowed, reason = adapter._evaluate_slash_authorization(interaction)
++    assert allowed is authorized
++    assert (reason is None) is authorized
++
++
++def test_dependency_still_missing_fails_closed(imported_without_discord, monkeypatch):
++    adapter = make_adapter(imported_without_discord, monkeypatch)
++    original_import = builtins.__import__
++
++    def unavailable(name, *args, **kwargs):
++        if name == "discord" or name.startswith("discord."):
++            raise ImportError("discord.py unavailable")
++        return original_import(name, *args, **kwargs)
++
++    with monkeypatch.context() as blocked:
++        blocked.setattr(builtins, "__import__", unavailable)
++        allowed, reason = adapter._evaluate_slash_authorization(SimpleNamespace(
++            channel=SimpleNamespace(id=100), channel_id=100,
++            user=SimpleNamespace(id=42), guild=SimpleNamespace(id=1),
++        ))
++    assert allowed is False
++    assert "discord.py" in reason

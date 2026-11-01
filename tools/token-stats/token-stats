@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+"""Last-24h model calls per profile/model from Hermes agent logs: calls, input, cached share, output, context size."""
+import collections
+import glob
+import os
+import re
+import time
+
+pat = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*API call #\d+: model=(\S+) provider=(\S+) in=(\d+) out=(\d+) "
+                 r"total=\d+ .*?cache=(\d+)/(\d+)")
+aux = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*Auxiliary (\w+): using")
+since = time.time() - 86400
+agg = collections.defaultdict(lambda: [0, 0, 0, 0, 0])
+auxc = collections.Counter()
+for f in [os.path.expanduser("~/.hermes/logs/agent.log")] + glob.glob(os.path.expanduser("~/.hermes/profiles/*/logs/agent.log")):
+    prof = "default" if "/profiles/" not in f else f.split("/profiles/")[1].split("/")[0]
+    try:
+        for line in open(f, errors="replace"):
+            m = pat.match(line)
+            if m and time.mktime(time.strptime(m[1], "%Y-%m-%d %H:%M:%S")) >= since:
+                a = agg[(prof, m[2], m[3])]
+                a[0] += 1
+                a[1] += int(m[4])
+                a[2] += int(m[6])
+                a[3] += int(m[5])
+                a[4] = max(a[4], int(m[4]))
+                continue
+            m = aux.match(line)
+            if m and time.mktime(time.strptime(m[1], "%Y-%m-%d %H:%M:%S")) >= since:
+                auxc[m[2]] += 1
+    except OSError:
+        pass
+tot = [0, 0, 0, 0]
+print(f"{'profile':14} {'model':30} {'calls':>5} {'input M':>8} {'cached':>7} {'out k':>6} {'avg in k':>8} {'max in k':>8}")
+for (p, mo, pr), a in sorted(agg.items(), key=lambda kv: -kv[1][1]):
+    print(f"{p:14} {mo[:30]:30} {a[0]:5} {a[1]/1e6:8.2f} {100*a[2]/max(a[1],1):6.0f}% {a[3]/1e3:6.0f} "
+          f"{a[1]/max(a[0],1)/1e3:8.0f} {a[4]/1e3:8.0f}")
+    for i in range(4):
+        tot[i] += a[i]
+print(f"TOTAL {tot[0]} calls, input {tot[1]/1e6:.1f}M ({100*tot[2]/max(tot[1],1):.0f}% cached, "
+      f"{(tot[1]-tot[2])/1e6:.2f}M uncached), output {tot[3]/1e3:.0f}k")
+print("auxiliary calls (approval, compression, ...):", dict(auxc.most_common(8)))

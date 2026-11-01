@@ -1,0 +1,5 @@
+#!/bin/bash
+# Hermes dashboard on loopback only: it has no login and can edit ~/.hermes/.env.
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+exec "$HOME/.local/bin/hermes" dashboard --host 127.0.0.1 --port 9119 --no-open

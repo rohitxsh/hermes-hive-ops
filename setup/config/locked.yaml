@@ -1,0 +1,27 @@
+# Extra overlay for LOCKED_PROFILES: a web-only chat for untrusted browsing and research. It can search and read
+# the web and ask the admin profile (ask-assistant plugin), nothing else: no terminal, files, browser, memory,
+# skills, schedules or delegation, and every command is denied. Applied after overlay.yaml.
+agent:
+  disabled_toolsets: [terminal, file, browser, delegation, kanban, cronjob, memory, tts, skills, session_search,
+                      code_execution, vision, image_gen, video, video_gen, computer_use, todo, clarify, discord,
+                      discord_admin, project, desktop_ui, catalog, context_engine, x_search, connections, stt, a2a]
+approvals:
+  mode: manual
+  deny: ["*"]
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+curator:
+  enabled: false
+stt:
+  enabled: false
+skills:
+  external_dirs: []
+terminal:
+  home_mode: profile
+plugins:
+  enabled: [approval-notify, ask-assistant, llm-pacer, local-extract, outbound-guard, quota-alert, searxng-tuned, token-usage]
+platform_toolsets:
+  discord: [web, no_mcp, ask_assistant]
+  cli: [web, no_mcp, ask_assistant]
+  cron: [web, no_mcp, ask_assistant]

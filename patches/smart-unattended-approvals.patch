@@ -1,0 +1,76 @@
+diff --git a/tools/approval.py b/tools/approval.py
+index 8176305c20..860b9adc72 100644
+--- a/tools/approval.py
++++ b/tools/approval.py
+@@ -657,7 +657,18 @@ def _unattended_contexts() -> list[_Unattended]:
+ 
+ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
+-    if ctx.mode() != "deny":
++    mode = ctx.mode()
++    if mode == "smart":  # local patch (vm-a 2026-10-26): smart unattended approvals
++        is_dangerous, pattern_key, description = detect_dangerous_command(command)
++        if not is_dangerous or _is_permanently_approved(pattern_key):
++            return None
++        from tools.approval_smart import _smart_verdict
++        if _smart_verdict(command, description, pattern_key, [pattern_key], get_current_session_key()) == "approve":
++            return None
++        return {"approved": False, "message": ctx.block_message(
++            f"Command flagged as dangerous ({description}) and the smart guardian did not approve it for an unattended run",
++            noun="dangerous commands", advice="Find an alternative approach that avoids this command, or report it.")}
++    if mode != "deny":
+         return None
+ 
+     def block(subject: str) -> dict:
+@@ -1002,7 +1013,7 @@ def _run_approval_gate(
+             "unattended": unattended_deny_message,
+         }
+         for ctx in _unattended_contexts():
+-            if ctx.mode() == "deny":
++            if ctx.mode() in ("deny", "smart"):  # local patch (vm-a 2026-10-26): smart unattended approvals: flagged tool/file actions stay denied
+                 message = deny_messages[ctx.name]
+                 if not message and ctx.name == "unattended":
+                     # Platform contexts keep the generic wording (historical shape).
+@@ -1245,6 +1256,15 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
+     # No user is present to approve arbitrary code in -q / cron / unattended
+     # sessions: the first active context resolves instantly from its mode.
+     for ctx in _unattended_contexts():
++        if ctx.mode() == "smart":  # local patch (vm-a 2026-10-26): smart unattended approvals: the guardian judges the whole script
++            from tools.approval_smart import _smart_verdict
++            if _smart_verdict(f"execute_code <<'PY'{chr(10)}{code}{chr(10)}PY", description, pattern_key, [pattern_key],
++                              get_current_session_key()) == "approve":
++                return _approved()
++            return _denied(
++                "BLOCKED by smart approval: this execute_code script was not approved for an unattended run. "
++                + ctx.exec_tail, pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
++            )
+         if ctx.mode() == "deny":
+             return _denied(
+                 "BLOCKED: execute_code runs arbitrary local Python (including "
+diff --git a/tools/approval_context.py b/tools/approval_context.py
+index 0eece969e1..ab35db392e 100644
+--- a/tools/approval_context.py
++++ b/tools/approval_context.py
+@@ -349,6 +349,8 @@ def _binary_approval_mode(key: str) -> str:
+     try:
+         from hermes_cli.config import load_config_readonly
+         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
++        if mode == "smart":  # local patch (vm-a 2026-10-26): smart unattended approvals: guardian decides, escalations are refused
++            return "smart"
+         return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
+     except Exception:
+         return "deny"
+diff --git a/tools/approval_smart.py b/tools/approval_smart.py
+index 6370cd4f0a..31263703eb 100644
+--- a/tools/approval_smart.py
++++ b/tools/approval_smart.py
+@@ -137,7 +137,8 @@ def _smart_approve(command: str, description: str) -> str:
+             logger.warning("Smart approvals: guardian returned an empty answer "
+                            "(finish_reason=%s), escalating", finish_reason)
+             return "escalate"
+-        return _VERDICTS.get(answer, "escalate")
++        # local patch (vm-a 2026-10-26): smart unattended approvals: the verdict is the last line (Claude sometimes explains first)
++        return _VERDICTS.get(answer.splitlines()[-1].strip(" .*`!"), "escalate")
+     except Exception as e:
+         # WARNING, not DEBUG: a failed/blocked guardian call is a real event
+         # the operator needs to see (the hang was invisible at DEBUG).

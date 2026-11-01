@@ -1,0 +1,19 @@
+# Generic maintenance jobs, created in ADMIN_PROFILE by create-jobs.py (skipped when a job of that name exists).
+# deliver: "admin" means ADMIN_DELIVER from settings.env (or local when empty). No-agent jobs post their stdout and
+# stay silent when there is nothing to say.
+- {name: self-check, schedule: "0 9 * * *", script: agent-health.sh, deliver: admin}
+- {name: quota guard, schedule: "every 5m", script: quota-guard.py, deliver: local}
+- {name: approval notify, schedule: "every 1m", script: approval-notify.py, deliver: admin}
+- {name: gateway heal, schedule: "every 2m", script: gateway-heal.py, deliver: admin}
+- {name: hermes backup, schedule: "30 2 * * *", script: hermes-backup.sh, deliver: admin}
+- {name: issue digest, schedule: "every 10m", script: issue-digest.py, deliver: admin}
+- {name: memory export, schedule: "15 3 * * *", script: memory-export.py, deliver: admin}
+- {name: memory learn, schedule: "30 3 * * *", script: memory-learn.py, deliver: admin}
+- {name: hermes update notice, schedule: "0 */6 * * *", script: hermes-update-notice.py, deliver: admin}
+- {name: attention check, schedule: "every 30m", script: attention-check.sh, deliver: admin}
+- {name: kanban feed, schedule: "*/2 * * * *", script: kanban-feed.py, deliver: local, needs: ~/agents/kanban-feed/config.json}
+- name: issue handler
+  schedule: "*/10 * * * *"
+  monitor_script: issue-pending.sh
+  deliver: admin
+  prompt_file: issue-handler.md

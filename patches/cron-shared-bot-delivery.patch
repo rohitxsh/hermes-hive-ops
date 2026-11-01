@@ -1,0 +1,32 @@
+diff --git a/cron/scheduler_provider.py b/cron/scheduler_provider.py
+index f753b0a7fa..34d6ea097d 100644
+--- a/cron/scheduler_provider.py
++++ b/cron/scheduler_provider.py
+@@ -562,7 +562,10 @@ class InProcessCronScheduler(CronScheduler):
+             if profile_name is None or profile_name == default_profile:
+                 return adapters
+             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
+-            if not tick_adapters and adapters:
++            # LocalSessionAdapter is not a platform credential; every active local
++            # session must not disable exact-route shared-bot cron delivery.
++            from gateway.config import Platform
++            if not any(p != Platform.LOCAL for p in tick_adapters) and adapters:
+                 return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+             return tick_adapters
+ 
+diff --git a/gateway/run.py b/gateway/run.py
+index e11bbd75cb..5c668dbe00 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4490,7 +4490,10 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
+         if profile_adapters is None:
+             continue
+         with _profile_runtime_scope(profile_home or get_hermes_home()):
+-            if profile_name is not None and not profile_adapters and adapters:
++            # Local sessions do not own a messaging credential. Their adapter
++            # must not veto the satellite's exact primary-route delivery grant.
++            if (profile_name is not None
++                    and not any(p != Platform.LOCAL for p in profile_adapters) and adapters):
+                 routes = sched_preflight._primary_profile_routes_for_current_home()
+                 if routes:
+                     profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)

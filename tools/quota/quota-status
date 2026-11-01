@@ -1,0 +1,63 @@
+#!/usr/bin/python3
+"""quota-status: model quota for a profile, read from its own model chain.
+
+  quota-status                     overview: each provider's 5-hour and weekly use, which one answers now, auto mode
+  quota-status --gate              "ok" (exit 0), "wrap up: <why>" (exit 2: close to a pause, finish the current
+                                   step and save a handoff) or "paused: <why>" (exit 1) for scheduled/auto work
+  quota-status --gate --claude-code    same for starting a Claude Code CLI run (shares the Claude limit)
+Options: --profile NAME (default: the calling agent's profile), --fresh (re-read usage instead of the
+few-minute cache). Usage nobody can read counts as available.
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.expanduser("~/agents/src/quota"))
+import quota_lib as q  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--claude-code", action="store_true")
+    ap.add_argument("--profile")
+    ap.add_argument("--fresh", action="store_true")
+    a = ap.parse_args()
+    profile = a.profile or q.current_profile()
+    home = q.profile_home(profile)
+    providers = q.chain(home)
+    auto = q.auto_mode(home)
+    capped = q.caps(home)  # the auto-mode caps also apply when the owner made them permanent (quota-caps.json)
+    cp = q.cap_providers(home) if capped else ()
+
+    getu = q.profile_usage(home, lambda p: q.usage(p, fresh=a.fresh))
+
+    if a.gate:
+        ok, why = q.claude_code_allowed(capped, getu) if a.claude_code else q.run_allowed(providers, capped, getu, cp)
+        wrap = "" if a.claude_code or not ok else q.wrap_up(providers, capped, getu, cp)
+        if wrap:
+            print(f"wrap up: {wrap}. Finish or cleanly stop the current step, save progress and a short handoff "
+                  "(done, next), and don't start new large work.")
+            sys.exit(2)
+        print("ok" if ok else f"paused: {why}")
+        sys.exit(0 if ok else 1)
+    i = q.active_index(providers, getu)
+    print(f"Quota for profile {profile} (auto mode {'ON' if auto else 'off'}"
+          f"{'; auto-mode caps always on' if capped and not auto else ''}):")
+    for n, p in enumerate(providers):
+        mark = "→ answering now" if n == i else ("used up" if n < i else "")
+        print(f"  {n + 1}. {q.provider_name(p)}: {q.describe(getu(p))} {mark}".rstrip())
+    if i >= len(providers):
+        print("  Every provider is used up right now.")
+    ok, why = q.run_allowed(providers, capped, getu, cp)
+    wrap = q.wrap_up(providers, capped, getu, cp) if ok else ""
+    print("Scheduled work: " + (f"wrapping up ({wrap})" if wrap else "running" if ok else f"paused ({why})"))
+    if capped:
+        print(f"Auto-mode caps: scheduled work stops at {q.AUTO_CAP:.0f}% of the second provider's 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit; "
+              "Claude Code runs share the Claude limit.")
+        if cp:
+            print(f"This profile also caps {', '.join(cp)} wherever it sits in the chain (quota-caps.json cap_providers).")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,5 @@
+name: token-usage
+version: 1.0.0
+description: "Send \"tokens\" (or /tokens) in any chat: this VM's model token use, lifetime and last 30 days, answered without a model call."
+author: hermes-ops-kit
+kind: standalone

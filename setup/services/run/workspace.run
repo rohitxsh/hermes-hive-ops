@@ -1,0 +1,10 @@
+#!/bin/bash
+# hermes-workspace (outsourc-e). Needs the gateway's API server (hermes_api_key) and the dashboard.
+# credentials.conf: LoadCredentialEncrypted=hermes_api_key and ui_password. COOKIE_SECURE=0 only for plain-HTTP LAN use.
+set -euo pipefail
+HERMES_API_TOKEN=$(<"$CREDENTIALS_DIRECTORY/hermes_api_key"); HERMES_PASSWORD=$(<"$CREDENTIALS_DIRECTORY/ui_password")
+export HERMES_API_TOKEN HERMES_PASSWORD HOST=127.0.0.1 PORT=3000 NODE_ENV=production COOKIE_SECURE=0
+export HERMES_API_URL=http://127.0.0.1:8642 HERMES_DASHBOARD_URL=http://127.0.0.1:9119
+export HERMES_CLI_BIN="$HOME/.local/bin/hermes" PATH="$HOME/.local/bin:$PATH"
+cd "$HOME/hermes-workspace"
+exec /usr/bin/node --max-old-space-size=2048 server-entry.js

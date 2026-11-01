@@ -1,0 +1,126 @@
+#!/usr/bin/python3
+"""hermes-restart-idle [--max-wait SECONDS] [--webui] [--dry-run]
+
+Gracefully restart this VM's Hermes gateway only when it is idle, so chat messages don't land in the restart
+window (where Hermes can refuse them with "runtime_draining"). Idle = no agent turn running (no live turn lease in
+any profile's state.db) and no inbound chat message for QUIET seconds; checked every 15 s. After --max-wait
+(default 1800 s) it restarts anyway, and Hermes still lets running turns finish first. --webui also restarts the
+web UI. Run it as root through systemd-run so it survives the restart it triggers:
+  sudo systemd-run --unit hermes-restart-idle --collect ~/.local/bin/hermes-restart-idle --webui
+"""
+import argparse
+import datetime
+import glob
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+HERMES_DIR = os.path.join(os.path.expanduser("~"), ".hermes")
+GATEWAY_LOG = os.path.join(HERMES_DIR, "logs", "gateway.log")
+LOG = os.path.join(HERMES_DIR, "logs", "restart-idle.log")
+UNIT = "agent-worker@hermes"
+QUIET = 30
+
+
+def log(msg):
+    line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    print(line)
+    try:
+        with open(LOG, "a") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def live_leases(now):
+    n = 0
+    for db in [os.path.join(HERMES_DIR, "state.db")] + glob.glob(os.path.join(HERMES_DIR, "profiles", "*", "state.db")):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            n += con.execute("select count(*) from session_turn_leases where expires_at > ?", (now,)).fetchone()[0]
+            con.close()
+        except sqlite3.Error:
+            continue
+    return n
+
+
+def kanban_running():
+    """Kanban tasks a worker is running right now. Workers are separate processes that talk to the gateway, so a
+    restart under them fails the run ("Gateway disconnected", then "runtime_draining") and counts against its retries."""
+    n = 0
+    for db in [os.path.join(HERMES_DIR, "kanban.db")] + glob.glob(os.path.join(HERMES_DIR, "kanban", "boards", "*", "kanban.db")):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            n += con.execute("select count(*) from tasks where status = 'running'").fetchone()[0]
+            con.close()
+        except sqlite3.Error:
+            continue
+    return n
+
+
+def last_inbound():
+    """Epoch of the latest inbound chat message in the gateway log (0 if none in its tail)."""
+    try:
+        with open(GATEWAY_LOG, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(GATEWAY_LOG) - 400_000))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return 0
+    for line in reversed(lines):
+        if "inbound message:" in line:
+            try:
+                return time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                return 0
+    return 0
+
+
+def systemctl(*args):
+    cmd = ["systemctl", *args] if os.geteuid() == 0 else ["sudo", "-n", "systemctl", *args]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def main_pid():
+    return systemctl("show", "-p", "MainPID", "--value", UNIT).stdout.strip()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--max-wait", type=int, default=1800)
+    ap.add_argument("--max-wait-kanban", type=int, default=3 * 3600,
+                    help="how long to wait for running Kanban tasks before restarting anyway (default 3 h)")
+    ap.add_argument("--webui", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    start = time.time()
+    while True:
+        now = time.time()
+        leases, quiet_for, tasks = live_leases(now), now - last_inbound(), kanban_running()
+        if a.dry_run:
+            print(f"turns running: {leases}; Kanban tasks running: {tasks}; last inbound message {quiet_for:.0f} s ago; "
+                  f"idle: {leases == 0 and tasks == 0 and quiet_for >= QUIET}")
+            return
+        if leases == 0 and tasks == 0 and quiet_for >= QUIET:
+            log(f"idle (no turns running, {quiet_for:.0f} s since the last message): restarting")
+            break
+        if now - start >= (a.max_wait_kanban if tasks else a.max_wait):
+            log(f"still busy after {now - start:.0f} s ({leases} turn(s), {tasks} Kanban task(s) running): restarting anyway, "
+                "running turns finish first")
+            break
+        time.sleep(15)
+    old = main_pid()
+    systemctl("kill", "-s", "SIGUSR1", "--kill-whom=main", UNIT)
+    for _ in range(150):
+        time.sleep(4)
+        new = main_pid()
+        if new not in (old, "", "0"):
+            break
+    if a.webui:
+        systemctl("restart", "agent-worker@webui")
+    log(f"gateway pid {old} -> {main_pid()}, {systemctl('is-active', UNIT).stdout.strip()}" + (", webui restarted" if a.webui else ""))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

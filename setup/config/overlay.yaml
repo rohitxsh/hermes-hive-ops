@@ -1,0 +1,73 @@
+# Applied to every profile by apply-overlay.py (deep merge: maps are merged, lists and scalars replaced).
+# Values here are the opinions of this kit; adjust before applying.
+agent:
+  max_turns: 500                    # inactivity, not wall-clock, ends a turn; long tasks need room
+  reasoning_effort: high
+  restart_drain_timeout: 60
+approvals:
+  mode: smart                       # a model judges each risky command against smart_policy
+  cron_mode: smart
+  unattended_mode: smart            # needs patches/smart-unattended-apply.py
+  single_query_mode: smart
+  timeout: 10800
+  discord_prompt_timeout: 900
+  smart_policy: >-
+    Owner policy: the owner wants to be asked only when a command is really concerning or dangerous. APPROVE routine
+    work without asking: reading files, logs and system state; listing, searching, ps, df, cd, mkdir; creating or
+    editing files in the user's home (~/agents, ~/work, ~/.hermes config, skills and scripts, keeping a backup of
+    configs) and in /tmp; running python, node, bash, git and gh, installing into project or Hermes venvs, and the
+    local tools (hermes, quota-status, automode, issues, consult, vault-fill, publish-artifact, my-messages,
+    report-issue, waiting-on-me, follow-up, renewals); graceful agent-worker restarts; installing well-known
+    packages. ESCALATE only: deleting or overwriting data that has no backup (outside /tmp, caches and build
+    output); changes to users, sudoers, SSH, firewall, networking, disks, mounts or boot; reading, printing, copying
+    or uploading secrets, tokens, credential stores or the vault; sending files or data to hosts the task doesn't
+    need; anything that spends money, publishes, deploys to production, emails or messages people; git force-push or
+    history rewrites; stopping or disabling security or monitoring services; commands whose purpose you can't tell.
+  deny: ["*rm -rf ~/.hermes*", "*rm *credstore*", "*authorized_keys*", "*passwd*", "*userdel*", "*ufw *", "*iptables*",
+         "*nft *", "*systemctl stop ssh*", "*systemctl disable ssh*", "*systemctl mask ssh*",
+         "*systemctl disable agent-worker@*", "*bw get*", "*bw list*", "*bw unlock*", "*bw export*", "*bw serve*",
+         "*bw_master_password*", "*bw_clientsecret*", "*Bitwarden CLI/data.json*"]
+auxiliary:
+  compression:
+    reasoning_effort: low           # summaries don't need deep thinking
+compression:
+  threshold_tokens: 200000          # fewer compressions means fewer lost skills and less lost context
+  protect_last_n: 8
+display:
+  busy_input_mode: queue            # messages sent while an agent works wait for the next turn
+  tool_progress_command: true       # /verbose toggles tool lines per chat
+  platforms:
+    discord:
+      tool_progress: log            # tool calls go to logs/tool_calls.log, not the chat
+      suppress_warning_notifications: true
+streaming:
+  enabled: true                     # replies appear in chat as they are written
+memory:
+  provider: holographic             # see setup/third-party (catalog plugin)
+  memory_char_limit: 4400
+  user_char_limit: 2750
+plugins:
+  enabled: [approval-notify, claude-subscription-directsdk-experimental, llm-pacer, local-extract, outbound-guard,
+            quota-alert, searxng-tuned, token-usage, holographic]
+web:
+  search_backend: searxng-tuned     # set SEARXNG_URL in each profile's .env
+  extract_backend: local-extract
+browser:
+  cloud_provider: camofox           # see setup/services/run/camofox.run
+  inactivity_timeout: 900
+skills:
+  external_dirs: [~/agents/shared-skills]
+terminal:
+  timeout: 600
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  non_interactive_hard_stop_enabled: true
+  warn_after: {exact_failure: 2, same_tool_failure: 3, idempotent_no_progress: 2}
+  hard_stop_after: {exact_failure: 5, same_tool_failure: 8, idempotent_no_progress: 10}
+provider_routing:
+  data_collection: deny
+secrets:
+  command:
+    enabled: true
+    command: ~/.local/bin/hermes-sealed-env   # sealed credentials into each profile's environment

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# publish-artifact <file.html> [--png-only] [--keep-controls] [--selector <css>] [--wait <ms>] [--slug <name>] | --selftest
+# Publishes a standalone HTML visual for a Discord reply:
+#   ~/artifacts/<timestamp>-<slug>.html   permanent copy (on vm-a also served on the LAN by the WebUI, login required)
+#   ~/.hermes/cache/scratch/<slug>.html   copy the gateway attaches to the reply (skipped with --png-only)
+#   ~/.hermes/cache/scratch/<slug>.png    1200x800 @2x dark-mode preview, embedded inline. It is a static image, so
+#                                         controls are shown as their current state (values, active labels) unless
+#                                         --keep-controls (UI prototypes, where the controls are the design)
+# Then prints the plain-text lines to paste into the reply.
+# Source: ~/agents/src/artifacts/ (installed copy: ~/.local/bin/publish-artifact). Optional LAN link base:
+# ARTIFACT_LAN_BASE or ~/.config/publish-artifact/lan-base (only where a web server serves ~/artifacts).
+set -euo pipefail
+
+SRC_DIR="$HOME/agents/src/artifacts"
+ART_DIR="$HOME/artifacts"
+SCRATCH="$HOME/.hermes/cache/scratch"
+LAN_BASE="${ARTIFACT_LAN_BASE:-$(cat "$HOME/.config/publish-artifact/lan-base" 2>/dev/null || true)}"
+NODE="${ARTIFACT_NODE:-$(command -v node || ls -d "$HOME"/.hermes/tools/node-*/bin/node 2>/dev/null | sort -V | tail -1 || true)}"
+
+usage() { echo "usage: publish-artifact <file.html> [--png-only] [--keep-controls] [--selector <css>] [--wait <ms>] [--slug <name>] | --selftest" >&2; exit 2; }
+png_size() { python3 -c 'import struct,sys; d=open(sys.argv[1],"rb").read(24); print("%dx%d" % struct.unpack(">II", d[16:24]) if d[:8]==b"\x89PNG\r\n\x1a\n" else "not-a-png")' "$1"; }
+
+# --selftest: build a sample interactive chart from live data, publish it, and check every output.
+selftest() {
+  local f="$SCRATCH/publish-artifact-selftest-src.html" out png html perm url code fail=0
+  mkdir -p "$SCRATCH"
+  python3 -I "$SRC_DIR/selftest.py" "$f" >/dev/null
+  out="$("$0" "$f" --slug publish-artifact-selftest --wait 1200)" || { echo "SELFTEST FAIL: publish step" >&2; exit 1; }
+  png="$SCRATCH/publish-artifact-selftest.png"; html="$SCRATCH/publish-artifact-selftest.html"
+  perm="$(printf '%s\n' "$out" | sed -n 's/^Published: //p')"
+  check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+  check "permanent copy in ~/artifacts" '[ -s "$perm" ]'
+  check "scratch HTML copy" '[ -s "$html" ] && cmp -s "$html" "$perm"'
+  check "PNG preview is 1200x800 @2x (2400x1600)" '[ "$(png_size "$png")" = 2400x1600 ]'
+  local pv; pv="$("$NODE" "$SRC_DIR/render.cjs" "$f" "$SCRATCH/publish-artifact-selftest-pv.png" "" 300 2>/dev/null || true)"
+  rm -f -- "$SCRATCH/publish-artifact-selftest-pv.png"
+  check "static preview turns controls into text (no clickable-looking buttons)" 'printf "%s" "$pv" | python3 -c "import json,sys; p=json.load(sys.stdin)[\"preview\"]; sys.exit(0 if p and p[\"replaced\"] + p[\"hidden\"] > 0 else 1)"'
+  check "no JavaScript or loading errors" '! printf "%s" "$out" | grep -q "^Warning:"'
+  check "reply lines printed" 'printf "%s\n" "$out" | grep -qx "~/.hermes/cache/scratch/publish-artifact-selftest.png"'
+  if [ -n "$LAN_BASE" ]; then
+    url="$(printf '%s' "$out" | grep -o 'http[^>]*' || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || echo 000)"
+    check "LAN link reachable (expects 401 = login required, got $code)" '[ "$code" = 401 ]'
+  else
+    echo "skip LAN link (none configured on this VM)"
+  fi
+  local out2; out2="$("$0" "$f" --slug publish-artifact-selftest-png --png-only)" || { echo "FAIL --png-only publish" >&2; fail=1; }
+  check "--png-only prints only the PNG line" 'printf "%s\n" "$out2" | grep -qx "~/.hermes/cache/scratch/publish-artifact-selftest-png.png" && ! printf "%s
+" "$out2" | grep -q "^~/.*\.html$"'
+  rm -f -- "$f" "$SCRATCH/publish-artifact-selftest-png.png" "$(printf '%s\n' "$out2" | sed -n 's/^Published: //p')"
+  [ "$fail" = 0 ] || { echo "SELFTEST FAILED" >&2; exit 1; }
+  echo "SELFTEST PASSED"
+  printf '%s\n' "$out" | sed -n '/^-----$/,$p'
+  exit 0
+}
+
+in="" selector="" wait=800 slug="" png_only=0 keep=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --selftest) selftest ;;
+    --png-only) png_only=1; shift ;;
+    --keep-controls) keep=1; shift ;;
+    --selector) selector="${2:?}"; shift 2 ;;
+    --wait) wait="${2:?}"; shift 2 ;;
+    --slug) slug="${2:?}"; shift 2 ;;
+    -h|--help) usage ;;
+    -*) echo "unknown option: $1" >&2; usage ;;
+    *) [ -z "$in" ] || usage; in="$1"; shift ;;
+  esac
+done
+[ -n "$in" ] || usage
+[ -f "$in" ] || { echo "error: not a file: $in" >&2; exit 1; }
+case "${in,,}" in *.html|*.htm) ;; *) echo "error: expected a .html file" >&2; exit 1 ;; esac
+[[ "$wait" =~ ^[0-9]+$ ]] || { echo "error: --wait must be milliseconds" >&2; exit 1; }
+[ -s "$in" ] || { echo "error: file is empty" >&2; exit 1; }
+[ -n "$NODE" ] && [ -x "$NODE" ] || { echo "error: node not found (set ARTIFACT_NODE)" >&2; exit 1; }
+
+[ -n "$slug" ] || slug="$(basename "$in")"; slug="${slug%.*}"
+slug="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-60)"
+[ -n "$slug" ] || slug="artifact"
+ts="$(date +%Y%m%d-%H%M%S)"
+
+mkdir -p "$ART_DIR" "$SCRATCH"
+perm="$ART_DIR/$ts-$slug.html"
+html="$SCRATCH/$slug.html"
+png="$SCRATCH/$slug.png"
+src_abs="$(realpath "$in")"
+cp -- "$in" "$perm"; chmod 644 "$perm"
+[ "$png_only" = 1 ] || [ "$src_abs" = "$(realpath -m "$html")" ] || cp -- "$in" "$html"
+
+badge=1; [ "$png_only" = 1 ] && badge=0
+res="$(ARTIFACT_KEEP_CONTROLS=$keep ARTIFACT_BADGE=$badge "$NODE" "$SRC_DIR/render.cjs" "$perm" "$png" "$selector" "$wait" 2>/dev/null || true)"
+if ! printf '%s' "$res" | grep -q '"ok":true'; then
+  echo "error: screenshot failed: ${res:-no output from renderer}" >&2
+  rm -f -- "$perm"
+  echo "Nothing was published. Fix the page or the --selector and run again." >&2
+  exit 1
+fi
+errs="$(printf '%s' "$res" | python3 -c 'import json,sys; [print("  - " + e[:200]) for e in (json.load(sys.stdin).get("errors") or [])[:3]]')"
+
+echo "Published: $perm"
+[ -z "$errs" ] || { echo "Warning: the page logged errors while rendering; check the preview (vision) and fix the page if it looks wrong:"; echo "$errs"; }
+echo "Paste these lines into your reply as plain text (not in backticks or a code block):"
+echo "-----"
+echo "~/${png#"$HOME"/}"
+if [ "$png_only" = 0 ]; then
+  echo "~/${html#"$HOME"/}"
+  if [ -n "$LAN_BASE" ]; then
+    # Encode the whole path (%2F) so the gateway doesn't pick it out of the link and attach the HTML twice.
+    enc="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$perm")"
+    echo "Interactive version on the home LAN (WebUI login): <$LAN_BASE/api/media?path=$enc&inline=1>"
+  fi
+fi
+echo "-----"

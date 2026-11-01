@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TITLE</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: dark; --bg:#0f172a; --panel:#1e293b; --border:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:1160px; margin:0 auto; padding:28px 20px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .lede { color:var(--muted); margin:0 0 20px; }
+  .grid { display:grid; grid-template-columns: 280px 1fr; gap:16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .val { color:var(--accent); font-weight:600; }
+  .chart { position:relative; height:520px; }
+  .src { color:var(--muted); font-size:12px; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TITLE</h1>
+  <p class="lede">One-line takeaway goes here.</p>
+  <div class="grid">
+    <section class="card">
+      <label for="growth">Growth per period: <span class="val" id="growthVal"></span></label>
+      <input id="growth" type="range" min="0" max="20" step="0.5" value="8">
+      <label for="periods">Periods: <span class="val" id="periodsVal"></span></label>
+      <input id="periods" type="range" min="4" max="24" step="1" value="12">
+    </section>
+    <section class="card"><div class="chart"><canvas id="chart"></canvas></div></section>
+  </div>
+  <p class="src">Source: REPLACE WITH DATA SOURCE.</p>
+</main>
+<script>
+  // Replace with real data. Keep everything in this one file.
+  const START = 100;
+  Chart.defaults.color = '#cbd5e1';
+  Chart.defaults.borderColor = '#334155';
+  const $ = id => document.getElementById(id);
+  const chart = new Chart($('chart'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ label: 'Value', data: [], borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.15)', fill: true, tension: .3 }] },
+    options: { maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: true } } }
+  });
+  function update() {
+    const g = +$('growth').value, n = +$('periods').value;
+    $('growthVal').textContent = g + '%'; $('periodsVal').textContent = n;
+    chart.data.labels = Array.from({ length: n + 1 }, (_, i) => 'P' + i);
+    chart.data.datasets[0].data = chart.data.labels.map((_, i) => +(START * (1 + g / 100) ** i).toFixed(1));
+    chart.update();
+  }
+  ['growth', 'periods'].forEach(id => $(id).addEventListener('input', update));
+  update();
+</script>
+</body>
+</html>

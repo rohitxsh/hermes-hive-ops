@@ -1,0 +1,9 @@
+#!/bin/bash
+# Hermes gateway (all profiles behind one process). Tokens come from sealed credentials, never ~/.hermes/.env.
+# credentials.conf: LoadCredentialEncrypted=discord_bot_token (+ openrouter_api_key, hermes_api_key if you use them)
+set -euo pipefail
+DISCORD_BOT_TOKEN=$(<"$CREDENTIALS_DIRECTORY/discord_bot_token"); export DISCORD_BOT_TOKEN
+[ -f "$CREDENTIALS_DIRECTORY/openrouter_api_key" ] && { OPENROUTER_API_KEY=$(<"$CREDENTIALS_DIRECTORY/openrouter_api_key"); export OPENROUTER_API_KEY; }
+[ -f "$CREDENTIALS_DIRECTORY/hermes_api_key" ] && { API_SERVER_KEY=$(<"$CREDENTIALS_DIRECTORY/hermes_api_key"); export API_SERVER_KEY; }
+export PATH="$HOME/.local/bin:$PATH"
+exec "$HOME/.local/bin/hermes" gateway run --replace --external-supervisor

@@ -1,0 +1,4 @@
+## Visual Deliverables
+Decide per reply whether a visual helps. Use one when it makes the answer clearly easier to grasp than text (numbers to compare, a trend, an architecture or flow, a screen to show, a calculator) or when someone asks for one. Most replies don't need one: skip it for short answers, simple questions, status updates, confirmations and chat. When unsure, answer in text and offer the visual as a next-step option.
+- For anything a chart, diagram or interactive tool explains better (multi-variable comparisons, trends, architecture flows, calculators, UI prototypes), load the `interactive-visuals` skill and deliver via `publish-artifact` (PNG preview inline, interactive HTML attached; `--png-only` for a plain chart).
+- Include the exact path it prints as plain text (never inside backticks or code blocks) so the Discord gateway embeds it.

@@ -1,0 +1,151 @@
+#!/usr/bin/python3
+"""memory-export (2026-10-29, the owner: avoid lock-in, memory first). Nightly, no LLM, read-only on Hermes's data.
+
+Writes every profile's memory as plain files any agent framework (or a human) can read, to
+~/agents/memory-export/<profile>/:
+  MEMORY.md, USER.md       Hermes's built-in memory files, copied as they are
+  facts.md, facts.jsonl    holographic memory facts (minus forgotten ones), with category, tags, trust, entities
+  conversations/YYYY-MM.jsonl   chat history: user and assistant text only, one message per line
+                                (time, profile, session, source, chat, thread, user, role, title, content).
+                                Skips tool output, system prompts and cron prompts (the same job prompt every run).
+  README.md                what is where and how many of each
+Silent on success; prints the problem and exits 1 otherwise (the issue digest then lists the failed job).
+Usage: memory-export [--out DIR]"""
+import datetime as dt
+import json
+import os
+import shutil
+import sqlite3
+import sys
+
+HOME = os.path.expanduser("~")
+HERMES = f"{HOME}/.hermes"
+OUT = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else f"{HOME}/agents/memory-export"
+
+
+def ro(path):
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+
+
+def iso(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return dt.datetime.fromtimestamp(v, dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+    return str(v)
+
+
+def profiles():
+    yield "default", HERMES
+    base = f"{HERMES}/profiles"
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        if os.path.isdir(f"{base}/{name}"):
+            yield name, f"{base}/{name}"
+
+
+def export_facts(db, dst):
+    c = ro(db)
+    c.row_factory = sqlite3.Row
+    tables = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+    gone = {r[0] for r in c.execute("select fact_id from forgotten")} if "forgotten" in tables else set()
+    ents = {}
+    if {"fact_entities", "entities"} <= tables:
+        for fid, name in c.execute("select fe.fact_id, e.name from fact_entities fe join entities e using (entity_id)"):
+            ents.setdefault(fid, []).append(name)
+    rows = [dict(r) for r in c.execute("select * from facts order by category, fact_id") if r["fact_id"] not in gone]
+    c.close()
+    with open(f"{dst}/facts.jsonl", "w") as f:
+        for r in rows:
+            r = {k: v for k, v in r.items() if not isinstance(v, bytes)}
+            r["entities"] = sorted(ents.get(r["fact_id"], []))
+            f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+    with open(f"{dst}/facts.md", "w") as f:
+        f.write("# Holographic memory facts\n\n")
+        cat = None
+        for r in rows:
+            if r["category"] != cat:
+                cat = r["category"]
+                f.write(f"\n## {cat}\n\n")
+            extra = ", ".join(x for x in (r.get("tags") or "", "entities: " + ", ".join(ents[r["fact_id"]]) if ents.get(r["fact_id"]) else "") if x)
+            f.write(f"- {r['content']}" + (f" ({extra})" if extra else "") + f" [trust {r.get('trust_score')}, {r.get('created_at')}]\n")
+    return len(rows)
+
+
+def export_conversations(db, dst, profile):
+    c = ro(db)
+    q = ("select m.timestamp, m.session_id, s.source, s.chat_id, s.thread_id, s.user_id, m.role, s.title, m.content "
+         "from messages m join sessions s on s.id = m.session_id "
+         "where m.role in ('user', 'assistant') and m.content is not null and trim(m.content) != '' "
+         "and not (s.source = 'cron' and m.role = 'user') "
+         "and not (m.role = 'user' and m.content like 'Nightly memory review.%') "  # memory-learn's prompt repeats the chats
+         "order by m.timestamp, m.id")
+    os.makedirs(f"{dst}/conversations")
+    files, n = {}, 0
+    try:
+        for ts, sid, src, chat, thread, uid, role, title, content in c.execute(q):
+            month = dt.datetime.fromtimestamp(ts).strftime("%Y-%m")
+            if month not in files:
+                files[month] = open(f"{dst}/conversations/{month}.jsonl", "w")
+            files[month].write(json.dumps({"time": iso(ts), "profile": profile, "session": sid, "source": src, "chat": chat,
+                                           "thread": thread, "user": uid, "role": role, "title": title,
+                                           "content": content}, ensure_ascii=False) + "\n")
+            n += 1
+    finally:
+        for f in files.values():
+            f.close()
+        c.close()
+    return n
+
+
+def lines(path):
+    if not os.path.isdir(path):
+        return sum(1 for _ in open(path)) if os.path.exists(path) else 0
+    return sum(lines(f"{path}/{x}") for x in os.listdir(path))
+
+
+def main():
+    os.makedirs(OUT, mode=0o700, exist_ok=True)
+    os.chmod(OUT, 0o700)
+    summary = []
+    for name, home in profiles():
+        tmp, final = f"{OUT}/.{name}.tmp", f"{OUT}/{name}"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        mem = []
+        for fn in ("MEMORY.md", "USER.md"):
+            src = f"{home}/memories/{fn}"
+            if os.path.exists(src):
+                shutil.copy2(src, f"{tmp}/{fn}")
+                mem.append(fn)
+        nf = export_facts(f"{home}/memory_store.db", tmp) if os.path.exists(f"{home}/memory_store.db") else None
+        nc = export_conversations(f"{home}/state.db", tmp, name) if os.path.exists(f"{home}/state.db") else 0
+        # self-check: what's on disk matches what was read
+        assert nf is None or lines(f"{tmp}/facts.jsonl") == nf, f"{name}: facts.jsonl line count mismatch"
+        assert lines(f"{tmp}/conversations") == nc if nc else True, f"{name}: conversation line count mismatch"
+        if not (mem or nf or nc):
+            shutil.rmtree(tmp)
+            continue
+        with open(f"{tmp}/README.md", "w") as f:
+            f.write(f"# {name}: exported memory\n\nExported {dt.datetime.now().astimezone().isoformat(timespec='seconds')} "
+                    f"from {home} by ~/agents/src/memory-export (plain files, no Hermes needed to read them).\n\n"
+                    f"- Built-in memory: {', '.join(mem) or 'none'}\n"
+                    f"- Holographic facts: {nf if nf is not None else 'not installed'} (facts.md, facts.jsonl)\n"
+                    f"- Conversation messages: {nc} (conversations/YYYY-MM.jsonl; user and assistant text, "
+                    f"no tool output, system prompts or cron prompts)\n")
+        old = f"{OUT}/.{name}.old"
+        shutil.rmtree(old, ignore_errors=True)
+        if os.path.exists(final):
+            os.replace(final, old)
+        os.replace(tmp, final)
+        shutil.rmtree(old, ignore_errors=True)
+        summary.append(f"{name}: memory {'+'.join(mem) or '-'}, facts {nf if nf is not None else '-'}, messages {nc}")
+    if "--verbose" in sys.argv:
+        print("\n".join(summary))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:  # noqa: BLE001 - one line for the issue list, then fail the job
+        print(f"memory-export failed: {type(e).__name__}: {e}")
+        sys.exit(1)

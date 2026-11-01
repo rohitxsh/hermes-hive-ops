@@ -1,0 +1,7 @@
+name: searxng-tuned
+version: 1.0.0
+description: "SearXNG web search with fixed engines, query cleanup, at most 2 parallel requests and errors instead of crashes (local copy of the bundled provider, so hermes update can't undo it). Requires SEARXNG_URL."
+author: hermes-ops-kit
+kind: backend
+provides_web_providers:
+  - searxng-tuned

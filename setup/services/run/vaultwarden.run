@@ -1,0 +1,6 @@
+#!/bin/bash
+# Vaultwarden, the agents' own password vault (used by vault-fill and the vault-logins skill). Loopback only.
+# Settings in ~/vaultwarden/vaultwarden.env; data in ~/vaultwarden. Pin the image by digest in production.
+set -euo pipefail
+docker rm -f vaultwarden >/dev/null 2>&1 || true
+exec docker run --rm --name vaultwarden --env-file "$HOME/vaultwarden/vaultwarden.env" -v "$HOME/vaultwarden:/data" -p 127.0.0.1:8222:80 vaultwarden/server:latest

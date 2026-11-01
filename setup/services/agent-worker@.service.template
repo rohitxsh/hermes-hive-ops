@@ -1,0 +1,21 @@
+# One template for every long-running piece (Hermes gateway, WebUI, browser, vault...): agent-worker@<name>
+# runs ~/agents/<name>/run as __USER__ and restarts it on failure. Secrets reach a run script only through
+# LoadCredentialEncrypted= drop-ins (agent-worker@<name>.service.d/credentials.conf) as $CREDENTIALS_DIRECTORY files.
+[Unit]
+Description=Agent worker %i
+After=network-online.target docker.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=__USER__
+WorkingDirectory=__HOME__/agents/%i
+EnvironmentFile=-/etc/environment
+ExecStart=__HOME__/agents/%i/run
+Restart=always
+RestartSec=5
+MemoryHigh=80%
+MemoryMax=90%
+
+[Install]
+WantedBy=multi-user.target

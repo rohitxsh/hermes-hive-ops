@@ -1,0 +1,38 @@
+#!/usr/bin/python3
+"""What fills jobs's context: tool results by tool (and by file for read_file) over the last 24 h."""
+import collections
+import json
+import os
+import sqlite3
+import sys
+import time
+
+home = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~/.hermes/profiles/jobs")
+db = sqlite3.connect(f"{home}/state.db")
+since = time.time() - 86400
+calls = {}
+for sid, tcs in db.execute("select session_id, tool_calls from messages where role='assistant' and tool_calls is not null "
+                           "and timestamp > ?", (since,)):
+    for c in json.loads(tcs):
+        try:
+            a = json.loads(c["function"]["arguments"])
+        except Exception:
+            a = {}
+        key = c["function"]["name"]
+        if key in ("read_file", "write_file", "patch", "search_files"):
+            key += " " + str(a.get("path", ""))[-60:]
+        elif key == "terminal":
+            key += " " + (a.get("command", "").split()[0] if a.get("command") else "")
+        calls[c.get("id")] = key
+by = collections.defaultdict(lambda: [0, 0])
+sessions = set()
+for sid, tcid, content in db.execute("select session_id, tool_call_id, content from messages where role='tool' and timestamp > ?",
+                                     (since,)):
+    sessions.add(sid)
+    k = calls.get(tcid, "?")
+    by[k][0] += 1
+    by[k][1] += len(content or "")
+tot = sum(v[1] for v in by.values())
+print(f"{home}: {len(sessions)} sessions, {sum(v[0] for v in by.values())} tool results, {tot/1e6:.1f}M chars in 24 h")
+for k, (n, chars) in sorted(by.items(), key=lambda kv: -kv[1][1])[:22]:
+    print(f"{chars/1e3:8.0f}k chars {n:5}x  avg {chars/max(n,1)/1e3:5.1f}k  {k}")

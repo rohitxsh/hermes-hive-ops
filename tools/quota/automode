@@ -1,0 +1,156 @@
+#!/usr/bin/python3
+"""automode on|off|status [profile]: switch a profile's auto mode. "project" switches the whole Project team.
+
+on:  writes <profile home>/auto-mode.json and creates (or resumes) the profile's hourly "Auto mode" job,
+     which delivers to the profile's Discord channel. If quota doesn't allow work right now, the job stays
+     paused and the quota governor starts it as soon as it does. Approval prompts wait 6 hours while it's on.
+off: pauses that job; the governor won't restart it. Approval prompts go back to 3 hours.
+The profile defaults to the calling agent's own profile (HERMES_HOME).
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.expanduser("~/agents/src/quota"))
+import quota_lib as q  # noqa: E402
+
+SCHEDULE = "every 60m"
+APPROVAL_TIMEOUT_AUTO = 21600     # approvals.timeout while auto mode is on (owner: ideally 6 h)
+APPROVAL_TIMEOUT = 10800          # and otherwise (owner: at least 3 h)
+PROMPT = """AUTO MODE run. Your owner switched this profile to auto mode: work fully autonomously toward this profile's goals with what you already know (your SOUL, memory, notes, trackers, the Kanban board or GitHub issues), as well as you can, within your SOUL's rules.
+1. Run `quota-status --gate`. If it says paused, reply exactly [SILENT] and stop. If it says wrap up, don't start new work: if your log shows a step in progress, finish or cleanly stop it, save progress and write the handoff (step 4), then stop.
+2. Pick the most valuable next piece of work and do it end to end. Keep the run focused (roughly 30 minutes of work); the next run continues where you left off. Re-run `quota-status --gate` between major steps; on wrap up, finish the current step cleanly instead of starting the next.
+3. Before starting a Claude Code run, check `quota-status --gate --claude-code`; don't start one if it says paused.
+4. Keep a short log in auto-mode-log.md in your working folder: what you did, what's in progress, what's next, and when you last posted a digest. Write it before you stop for any reason, so the next run picks up cleanly.
+5. Discord: post only major updates (important results, decisions you made, blockers that need your owner, questions batched together). If the last digest in the log is more than 12 hours old, post a brief digest of progress since then. Otherwise reply exactly [SILENT].
+Never do anything your SOUL says needs approval; ask for it in your next update instead. If you hit a quota or rate-limit error, save what you can, note where you stopped in the log, and reply [SILENT]: the quota governor pauses and resumes this job."""
+
+
+def hermes(*args):
+    return subprocess.run([q.HERMES, *args], capture_output=True, text=True, timeout=180)
+
+
+def team(profile):
+    names = [n for n, _ in q.profiles()]
+    if profile == "project":
+        return [n for n in names if n == "project" or n.startswith("project-")]
+    return [profile]
+
+
+def channel(profile):
+    try:
+        routes = (q.load_config(q.HERMES_DIR).get("gateway") or {}).get("profile_routes") or []
+    except Exception:
+        routes = []
+    for r in routes:
+        if r.get("profile") == profile and r.get("chat_id") and not r.get("thread_id"):
+            return str(r["chat_id"])
+    for env in (os.path.join(q.profile_home(profile), ".env"), os.path.join(q.HERMES_DIR, ".env")):
+        try:
+            m = re.search(r"^DISCORD_HOME_CHANNEL=(\d+)", open(env).read(), re.M)
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return None
+
+
+def workdir(profile):
+    try:
+        cwd = (q.load_config(q.profile_home(profile)).get("terminal") or {}).get("cwd")
+    except Exception:
+        cwd = None
+    return cwd or os.path.join(q.HOME, "work", profile)
+
+
+def loop_job(profile):
+    try:
+        with open(os.path.join(q.profile_home(profile), "cron", "jobs.json")) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return next((j for j in (data.get("jobs", []) if isinstance(data, dict) else data)
+                 if j.get("name") == q.AUTO_JOB), None)
+
+
+def set_flag(profile, enabled):
+    for name in team(profile):
+        with open(os.path.join(q.profile_home(name), q.AUTO_FILE), "w") as fh:
+            json.dump({"enabled": enabled, "since": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}, fh)
+        # Hermes re-reads config.yaml when it changes, so no restart is needed.
+        hermes("--profile", name, "config", "set", "approvals.timeout", str(APPROVAL_TIMEOUT_AUTO if enabled else APPROVAL_TIMEOUT))
+
+
+def on(profile):
+    set_flag(profile, True)
+    job = loop_job(profile)
+    if job is None:
+        ch = channel(profile)
+        args = ["--profile", profile, "cron", "create", SCHEDULE, PROMPT, "--name", q.AUTO_JOB,
+                "--workdir", workdir(profile), "--deliver", f"discord:{ch}" if ch else "origin"]
+        r = hermes(*args)
+        m = re.search(r"Created job: (\w+)", r.stdout)
+        if not m:
+            sys.exit(f"could not create the Auto mode job: {r.stdout[-300:]} {r.stderr[-300:]}")
+        job = loop_job(profile)
+    if job.get("prompt") != PROMPT:  # jobs created by an older automode get the current prompt
+        hermes("--profile", profile, "cron", "edit", job["id"], "--prompt", PROMPT)
+    home = q.profile_home(profile)
+    ok, why = q.run_allowed(q.chain(home), True, q.profile_usage(home, lambda p: q.usage(p)))
+    paused = bool(job.get("paused_at")) or job.get("state") == "paused"
+    state = q.load_gov_state()
+    key = f"{profile}:{job['id']}"
+    if ok:
+        if paused:
+            hermes("--profile", profile, "cron", "resume", job["id"])
+        state["paused"].pop(key, None)
+        q.save_gov_state(state)
+        print(f"Auto mode is ON for {', '.join(team(profile))}: the '{q.AUTO_JOB}' job runs {SCHEDULE} and posts major updates.")
+    else:
+        if not paused:
+            hermes("--profile", profile, "cron", "pause", job["id"])
+        state["paused"][key] = {"profile": profile, "id": job["id"], "name": q.AUTO_JOB}
+        q.save_gov_state(state)
+        print(f"Auto mode is ON for {', '.join(team(profile))}, but waiting for quota: {why}. It starts automatically.")
+
+
+def off(profile):
+    set_flag(profile, False)
+    job = loop_job(profile)
+    if job:
+        if not (job.get("paused_at") or job.get("state") == "paused"):
+            hermes("--profile", profile, "cron", "pause", job["id"])
+        state = q.load_gov_state()
+        state["paused"].pop(f"{profile}:{job['id']}", None)
+        q.save_gov_state(state)
+    print(f"Auto mode is OFF for {', '.join(team(profile))}.")
+
+
+def status(profile):
+    home = q.profile_home(profile)
+    job = loop_job(profile)
+    auto = q.auto_mode(home)
+    ok, why = q.run_allowed(q.chain(home), q.caps(home), q.profile_usage(home, lambda p: q.usage(p)),
+                            q.cap_providers(home) if q.caps(home) else ())
+    jstate = "none" if job is None else ("paused" if job.get("paused_at") or job.get("state") == "paused" else
+                                         f"scheduled, next {str(job.get('next_run_at') or '')[11:16]}")
+    print(f"Auto mode: {'ON' if auto else 'OFF'}{' (auto-mode caps always on)' if q.caps_always(home) else ''} ({profile}); loop job: {jstate}; quota: {'ok' if ok else 'paused: ' + why}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("action", choices=["on", "off", "status"])
+    ap.add_argument("profile", nargs="?")
+    a = ap.parse_args()
+    profile = a.profile or q.current_profile()
+    if not os.path.isfile(os.path.join(q.profile_home(profile), "config.yaml")):
+        sys.exit(f"no such profile: {profile}")
+    {"on": on, "off": off, "status": status}[a.action](profile)
+
+
+if __name__ == "__main__":
+    main()

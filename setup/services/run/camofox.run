@@ -1,0 +1,12 @@
+#!/bin/bash
+# camofox-browser (jo-inc): Camoufox behind Hermes's browser tool, loopback only, crash telemetry off.
+# Optional VNC browser view for manual logins (loopback; ssh -L 6080:127.0.0.1:6080). credentials.conf: ui_password.
+set -euo pipefail
+VNC_PASSWORD=$(<"$CREDENTIALS_DIRECTORY/ui_password")
+export VNC_PASSWORD ENABLE_VNC=1 VNC_BIND=127.0.0.1 VNC_RFB_BIND=127.0.0.1 VNC_PORT=5900 NOVNC_PORT=6080
+export CAMOFOX_BIND_HOST=127.0.0.1 CAMOFOX_PORT=9377 CAMOFOX_CRASH_REPORT_ENABLED=false NODE_ENV=production
+export TAB_INACTIVITY_MS=900000                  # matches Hermes browser.inactivity_timeout 900
+export CAMOFOX_PROFILE_DIR="$HOME/.camofox/profiles"
+umask 077
+cd "$HOME/camofox"
+exec /usr/bin/node node_modules/@askjo/camofox-browser/server.js

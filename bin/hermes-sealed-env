@@ -1,0 +1,10 @@
+#!/bin/sh
+# Hermes secrets.command helper: prints sealed credentials as KEY=VALUE, decrypted on demand. A multi-profile gateway
+# gives each profile only its own .env, never the service environment, so this is how profiles get shared keys.
+# Map in ~/.config/hermes-sealed-env.conf, one per line:  ENV_NAME credential_name   (see setup/examples/)
+# A credential that can't be decrypted is skipped, so one missing key never blanks the others.
+CONF="${HERMES_SEALED_ENV_CONF:-$HOME/.config/hermes-sealed-env.conf}"
+[ -f "$CONF" ] || exit 0
+grep -vE '^\s*(#|$)' "$CONF" | while read -r name cred; do
+  v=$(sudo -n systemd-creds decrypt "/etc/credstore.encrypted/$cred" - 2>/dev/null) && printf '%s=%s\n' "$name" "$v"
+done

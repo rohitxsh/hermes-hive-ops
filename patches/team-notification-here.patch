@@ -1,0 +1,236 @@
+--- a/plugins/platforms/discord/adapter.py
++++ b/plugins/platforms/discord/adapter.py
+@@ -687,6 +687,20 @@
+         users=_b("DISCORD_ALLOW_MENTION_USERS", "users", True),
+         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", "replied_user", True),
+     )
++
++
++def _team_notification_payload(content: str, *, enabled: bool, notify: bool = False) -> tuple[str, dict]:
++    """Opt-in @here only: preserve the safe client default and neutralize body broadcasts."""
++    if not enabled or not (notify or re.match(r"^\s*@here(?:\s|$)", content)):
++        return content, {}
++    body = content.lstrip()
++    prefix = r"^(?:@here(?=\s|$)|@Owner(?=\s|$)|<@!?100000000000000001>)\s*"
++    while re.match(prefix, body):
++        body = re.sub(prefix, "", body, count=1)
++    body = body.replace("@everyone", "＠everyone").replace("@here", "＠here")
++    return "@here\n" + body, {"allowed_mentions": discord.AllowedMentions(
++        everyone=True, roles=False, users=False, replied_user=False,
++    )}
+ 
+ 
+ def _discord_ready_timeout_seconds() -> float:
+@@ -3285,9 +3299,13 @@
+                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+             # Forum channels reject channel.send() — create a thread post instead.
+             if self._is_forum_parent(channel):
+-                result = await self._send_to_forum(channel, content)
++                result = await self._send_to_forum(channel, content, team_notification=bool(metadata and metadata.get("job_id")))
+                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
+-            formatted = self.format_message(content)
++            formatted, mention_kwargs = _team_notification_payload(
++                self.format_message(content),
++                enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
++                notify=bool(metadata and metadata.get("job_id")),
++            )
+             chunks = self._cap_split_chunks(
+                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+             )
+@@ -3299,7 +3317,7 @@
+                 else:  # "first" (default) or "off"
+                     chunk_reference = reference if i == 0 else None
+                 try:
+-                    msg = await channel.send(content=chunk, reference=chunk_reference)
++                    msg = await channel.send(content=chunk, reference=chunk_reference, **mention_kwargs)
+                 except Exception as e:
+                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
+                         logger.warning(
+@@ -3307,7 +3325,7 @@
+                             self.name, reply_to,
+                         )
+                         reference = None
+-                        msg = await channel.send(content=chunk, reference=None)
++                        msg = await channel.send(content=chunk, reference=None, **mention_kwargs)
+                     else:
+                         raise
+                 message_ids.append(str(msg.id))
+@@ -3346,15 +3364,19 @@
+         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+         return thread_channel, thread_id, starter_msg, message_id
+ 
+-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
++    async def _send_to_forum(self, forum_channel: Any, content: str, *, team_notification: bool = False) -> SendResult:
+         """Create a forum thread post with the message as starter (forum channels reject direct
+         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
+-        formatted = self.format_message(content)
++        formatted, mention_kwargs = _team_notification_payload(
++            self.format_message(content),
++            enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
++            notify=team_notification,
++        )
+         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+         thread_name = _derive_forum_thread_name(content)
+         starter_content = chunks[0] if chunks else thread_name
+         try:
+-            thread = await forum_channel.create_thread(name=thread_name, content=starter_content)
++            thread = await forum_channel.create_thread(name=thread_name, content=starter_content, **mention_kwargs)
+         except Exception as e:
+             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+@@ -3363,7 +3385,7 @@
+         warnings: list[str] = []
+         for chunk in chunks[1:]:
+             try:
+-                msg = await thread_channel.send(content=chunk)
++                msg = await thread_channel.send(content=chunk, **mention_kwargs)
+                 message_ids.append(str(msg.id))
+             except Exception as e:
+                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
+@@ -3445,7 +3467,10 @@
+         try:
+             channel = await self._resolve_channel(chat_id)
+             msg = channel.get_partial_message(int(message_id))
+-            formatted = self.format_message(content)
++            formatted, mention_kwargs = _team_notification_payload(
++                self.format_message(content),
++                enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
++            )
+             _preview_key = (str(chat_id), str(message_id))
+             _saturated_preview = False
+             if finalize:
+@@ -3466,7 +3491,7 @@
+                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
+                 self._last_overflow_preview.pop(_preview_key, None)
+             try:
+-                await msg.edit(content=formatted)
++                await msg.edit(content=formatted, **mention_kwargs)
+                 if _saturated_preview:
+                     self._last_overflow_preview[_preview_key] = formatted
+             except Exception as edit_err:
+@@ -3478,7 +3503,7 @@
+                     if self._last_overflow_preview.get(_preview_key) == truncated:
+                         # Saturated-preview dedup (see pre-flight path above).
+                         return SendResult(success=True, message_id=message_id)
+-                    await msg.edit(content=truncated)
++                    await msg.edit(content=truncated, **mention_kwargs)
+                     self._last_overflow_preview[_preview_key] = truncated
+                 else:
+                     raise
+@@ -3514,14 +3539,17 @@
+         replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
+         A continuation failure still reports success plus ``partial_overflow`` so the consumer
+         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
+-        formatted = self.format_message(content)
++        formatted, mention_kwargs = _team_notification_payload(
++            self.format_message(content),
++            enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
++        )
+         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+         if len(chunks) <= 1:
+             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
+-            await msg.edit(content=chunks[0] if chunks else formatted)
++            await msg.edit(content=chunks[0] if chunks else formatted, **mention_kwargs)
+             return SendResult(success=True, message_id=message_id)
+         try:
+-            await msg.edit(content=chunks[0])
++            await msg.edit(content=chunks[0], **mention_kwargs)
+         except Exception as e:
+             logger.error(
+                 "[%s] Overflow split: first-chunk edit failed: %s", self.name, e, exc_info=True,
+@@ -3541,7 +3569,7 @@
+                 # Prior message without to_reference (duck-typed): build the reference from ids.
+                 reference = self._message_reference_from_ids(prev_msg.id, channel)
+             try:
+-                sent = await channel.send(content=chunk, reference=reference)
++                sent = await channel.send(content=chunk, reference=reference, **mention_kwargs)
+             except Exception as send_err:
+                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
+                 logger.warning(
+@@ -3549,7 +3577,7 @@
+                     self.name, send_err,
+                 )
+                 try:
+-                    sent = await channel.send(content=chunk, reference=None)
++                    sent = await channel.send(content=chunk, reference=None, **mention_kwargs)
+                 except Exception as retry_err:
+                     logger.warning(
+                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
+@@ -5645,7 +5673,8 @@
+             prefix = f"{header}\n\n"
+             suffix = tail
+         truncated_suffix = "\n" + t("platform.discord.prompt.truncated_marker")
+-        budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
++        here_budget = 6 if self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True) else 0
++        budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix) - here_budget)
+         if len(body) > budget:
+             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
+         return f"{prefix}{body}{suffix}"
+@@ -5653,6 +5682,8 @@
+     def _approval_mention_content(self) -> Optional[str]:
+         """User mentions for approval prompts, gated on ``discord.approval_mentions``
+         (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
++        if self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True):
++            return "@here"
+         if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
+             return None
+         user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
+@@ -5662,6 +5693,7 @@
+ 
+     async def _send_prompt(
+         self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
++        team_notification: bool = False,
+     ) -> SendResult:
+         """Shared tail for interactive prompts: resolve target channel, call ``build(channel) ->
+         (send_kwargs, view)``, send, remember the message on the view. ``fail_log`` labels failures."""
+@@ -5670,6 +5702,14 @@
+         try:
+             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+             send_kwargs, view = build(channel)
++            if team_notification:
++                content, mention_kwargs = _team_notification_payload(
++                    send_kwargs.get("content", ""),
++                    enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
++                    notify=True,
++                )
++                send_kwargs["content"] = content
++                send_kwargs.update(mention_kwargs)
+             if view is not None:
+                 view.live_auth = self._component_live_auth
+             msg = await channel.send(**send_kwargs)
+@@ -5740,7 +5780,7 @@
+                         users=True, roles=False, everyone=False, replied_user=False,
+                     )
+             return send_kwargs, view
+-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
++        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build, team_notification=True)
+ 
+     async def send_slash_confirm(
+         self, chat_id: str, title: str, message: str, session_key: str,
+@@ -5758,7 +5798,7 @@
+                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
+             )
+             return {"content": content, "embed": embed, "view": view}, view
+-        return await self._send_prompt(chat_id, metadata, _build)
++        return await self._send_prompt(chat_id, metadata, _build, team_notification=True)
+ 
+     async def send_clarify(
+         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+@@ -5808,7 +5848,7 @@
+             if view:
+                 send_kwargs["view"] = view
+             return send_kwargs, view
+-        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
++        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify", team_notification=True)
+ 
+     async def send_update_prompt(
+         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
+@@ -5828,7 +5868,7 @@
+             )
+             content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
+             return {"content": content, "embed": embed, "view": view}, view
+-        result = await self._send_prompt(chat_id, metadata, _build)
++        result = await self._send_prompt(chat_id, metadata, _build, team_notification=True)
+         if result.success and _metadata_marks_nonconversational(metadata):
+             await self._nonconversational_messages.mark_many([result.message_id])
+         return result

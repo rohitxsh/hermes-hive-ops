@@ -1,0 +1,26 @@
+#!/bin/bash
+# gh wrapper: passes the sealed token for the repo in use (-R/--repo, else the origin of the current
+# git checkout) to gh as GH_TOKEN for this one command. The real binary is ~/.local/opt/gh/bin/gh.
+# `gh project`: Projects on a personal account can't be reached with fine-grained tokens, so these
+# commands use the classic token sealed as github_token_projects (project scope only).
+if [ "${1:-}" = project ]; then
+  GH_TOKEN=$(sudo -n systemd-creds decrypt /etc/credstore.encrypted/github_token_projects - 2>/dev/null) || GH_TOKEN=""
+  [ -n "$GH_TOKEN" ] && export GH_TOKEN || unset GH_TOKEN
+  exec "$HOME/.local/opt/gh/bin/gh" "$@"
+fi
+repo=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -R|--repo) repo=${args[i+1]:-} ;;
+    --repo=*) repo=${args[i]#--repo=} ;;
+  esac
+done
+[ -n "$repo" ] || repo=$(git remote get-url origin 2>/dev/null)
+repo=$(printf '%s' "$repo" | sed -E 's#^(https://github\.com/|git@github\.com:|github\.com/)##; s#\.git$##')
+if [ -n "$repo" ]; then
+  GH_TOKEN=$(printf 'protocol=https\nhost=github.com\npath=%s\n\n' "$repo" \
+    | "$HOME/.local/bin/git-credential-sealed" get | sed -n 's/^password=//p')
+  [ -n "$GH_TOKEN" ] && export GH_TOKEN || unset GH_TOKEN
+fi
+exec "$HOME/.local/opt/gh/bin/gh" "$@"

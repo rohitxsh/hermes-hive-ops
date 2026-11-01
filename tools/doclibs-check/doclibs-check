@@ -1,0 +1,5 @@
+"""Exit 0 when Hermes's live venv (facts.json) can import the document libraries the docx/xlsx/powerpoint/pdf skills use."""
+import glob, json, os, subprocess, sys
+f = sorted(glob.glob(os.path.expanduser('~/.hermes/installs/*/facts.json')), key=os.path.getmtime)[-1]
+py = json.load(open(f))['packages']['venv']['environment'] + '/bin/python'
+sys.exit(subprocess.run([py, '-I', '-c', 'import docx, openpyxl, pptx, pypdf'], capture_output=True).returncode)  # -I: no stray modules from cwd

@@ -1,0 +1,371 @@
+#!/usr/bin/python3
+"""attention (2026-11-01, the owner: Duet/dots/Grok-inspired features, no morning briefs). No model calls.
+
+  attention check            scheduled (Hermes cron, no agent): prints only NEW events, so nothing is posted when
+                             nothing happened: renewals due in <=7 days, <=1 day or expired (GitHub tokens and the broker's
+                             Data Plan detected automatically, domains via RDAP, the rest from `renewals add`), items
+                             waiting on a person for over 24 h (blocked Kanban cards, unanswered approvals), follow-ups
+                             past due, and failed CI runs on the default branch of the GitHub checkouts under ~/work.
+  waiting-on-me              everything currently waiting on a person, across all agents on this VM
+  follow-up add --due DATE [--by PROFILE] TEXT | close ID [NOTE] | list
+  renewals add --date DATE NAME [--note TEXT] | remove NAME | list
+  attention --selftest
+State and lists: ~/agents/attention/ (state.json, followups.json, renewals.json, config.json). Tokens are read only in
+memory; only expiry dates are cached."""
+import datetime as dt
+import glob
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+
+H = os.path.expanduser("~")
+D = f"{H}/agents/attention"
+NOW = dt.datetime.now().astimezone()
+TODAY = NOW.date()
+
+
+def load(name, default):
+    try:
+        return json.load(open(f"{D}/{name}"))
+    except (OSError, ValueError):
+        return default
+
+
+def save(name, data):
+    os.makedirs(D, exist_ok=True)
+    tmp = f"{D}/{name}.tmp"
+    json.dump(data, open(tmp, "w"), indent=1, default=str)
+    os.replace(tmp, f"{D}/{name}")
+
+
+def run(cmd, cwd=None, timeout=60):
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+
+
+def parse_date(s):
+    """Date from 'YYYY-MM-DD...' (GitHub, RDAP, broker) or 'DD/MM/YYYY'; None otherwise."""
+    s = str(s).strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s) or re.match(r"(\d{2})/(\d{2})/(\d{4})", s)
+    if not m:
+        return None
+    y, mo, d = (m.group(1), m.group(2), m.group(3)) if len(m.group(1)) == 4 else (m.group(3), m.group(2), m.group(1))
+    try:
+        return dt.date(int(y), int(mo), int(d))
+    except ValueError:
+        return None
+
+
+# ---------- renewals ----------
+def github_expiries(cache):
+    """{credential name: expiry date} for sealed github_* tokens; re-read once a day."""
+    if cache.get("checked") == str(TODAY):
+        return cache.get("dates", {})
+    rc, out = run(["sudo", "-n", "ls", "/etc/credstore.encrypted"])
+    dates = {}
+    for name in sorted(n for n in out.split() if n.startswith("github") and "." not in n):
+        rc, tok = run(["sudo", "-n", "systemd-creds", "decrypt", f"/etc/credstore.encrypted/{name}", "-"])
+        tok = tok.strip()
+        if rc or not tok:
+            continue
+        try:
+            req = urllib.request.Request("https://api.github.com/rate_limit", headers={"Authorization": f"Bearer {tok}", "User-Agent": "attention"})
+            exp = urllib.request.urlopen(req, timeout=20).headers.get("github-authentication-token-expiration")
+        except Exception:
+            exp = None
+        finally:
+            tok = None
+        if exp:
+            dates[name] = str(parse_date(exp))
+    cache.update(checked=str(TODAY), dates=dates)
+    return dates
+
+
+def domain_expiry(domain):
+    try:
+        data = json.load(urllib.request.urlopen(f"https://rdap.org/domain/{domain}", timeout=20))
+        return next((str(parse_date(e["eventDate"])) for e in data.get("events", []) if e.get("eventAction") == "expiration"), None)
+    except Exception:
+        return None
+
+
+def renewals():
+    items = {r["name"]: r for r in load("renewals.json", [])}
+    cache = load("auto-cache.json", {})
+    gh = github_expiries(cache.setdefault("github", {}))
+    for name, date in gh.items():
+        items.setdefault(f"GitHub token {name}", {"name": f"GitHub token {name}", "date": date,
+                                                  "note": "regenerate it on GitHub, then re-seal it (owner types it on the VM)"})
+    dcache = cache.setdefault("domains", {})
+    if dcache.get("checked") != str(TODAY):
+        dcache.update(checked=str(TODAY), dates={d: domain_expiry(d) for d in load("config.json", {}).get("domains", [])})
+    for d, date in (dcache.get("dates") or {}).items():
+        if date:
+            items.setdefault(f"domain {d}", {"name": f"domain {d}", "date": date, "note": "renew at the registrar"})
+    if os.path.exists("/usr/local/bin/broker-status") or os.path.exists(f"{H}/.local/bin/broker-status"):
+        if cache.get("broker_checked") != str(TODAY):
+            rc, out = run(["bash", "-lc", "broker-status"])
+            m = re.search(r"dataValidity\s+(\S+)", out)
+            cache.update(broker_checked=str(TODAY), broker_data=m.group(1) if m else None)
+        if cache.get("broker_data"):
+            items.setdefault("Broker data plan", {"name": "Broker data plan", "date": cache["broker_data"], "note": "renewing is the owner's call"})
+    save("auto-cache.json", cache)
+    return list(items.values())
+
+
+def renewal_events(sent):
+    out = []
+    for r in renewals():
+        date = parse_date(r["date"])
+        if not date:
+            continue
+        days = (date - TODAY).days
+        stage = "expired" if days < 0 else "1d" if days <= 1 else "7d" if days <= 7 else None
+        key = f"renewal:{r['name']}:{date}:{stage}"
+        if stage and key not in sent:
+            when = f"expired {-days} day(s) ago" if days < 0 else "expires today" if days == 0 else f"expires in {days} day(s)"
+            out.append((key, f"⏰ {r['name']} {when} ({date}). Next: {r.get('note') or 'renew it'}."))
+    return out
+
+
+# ---------- waiting on people ----------
+def kanban_waiting():
+    db = f"{H}/.hermes/kanban.db"
+    if not os.path.exists(db):
+        return []
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    rows = c.execute("""select t.id, t.assignee, t.title, coalesce(t.block_kind, 'needs_input'),
+        (select max(created_at) from task_events e where e.task_id = t.id and e.kind = 'blocked'),
+        (select payload from task_events e where e.task_id = t.id and e.kind = 'blocked' order by created_at desc limit 1)
+        from tasks t where t.status = 'blocked'""").fetchall()
+    out = []
+    for tid, who, title, kind, since, payload in rows:
+        if kind in ("dependency", "transient"):
+            continue
+        reason = ""
+        try:
+            reason = (json.loads(payload or "{}") or {}).get("reason", "")
+        except ValueError:
+            pass
+        if reason in ("initial_status", "blocked"):  # placeholder reasons Hermes records at creation
+            reason = ""
+        out.append({"id": tid, "who": who, "title": title, "since": since, "reason": reason})
+    return out
+
+
+def approvals_waiting():
+    f = f"{H}/.hermes/approval-queue.jsonl"
+    req, done = {}, set()
+    for line in open(f) if os.path.exists(f) else []:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("event") == "request":
+            req[e["id"]] = e
+        elif e.get("event") == "resolved":
+            done.add(e.get("id"))
+    return [e for i, e in req.items() if i not in done]
+
+
+def open_decisions():
+    out = []
+    for f in [f"{H}/agents/issues/decisions.md"] + load("config.json", {}).get("decision_files", []):
+        f = os.path.expanduser(f)
+        if os.path.exists(f):
+            out += [l[3:].strip() for l in open(f, encoding="utf-8") if l.startswith("## ")]
+    return out
+
+
+def waiting_events(sent):
+    out = []
+    for t in kanban_waiting():
+        if t["since"] and NOW.timestamp() - t["since"] > 86400 and f"kanban:{t['id']}:{t['since']}" not in sent:
+            hours = int((NOW.timestamp() - t["since"]) // 3600)
+            out.append((f"kanban:{t['id']}:{t['since']}", f"⏳ Waiting on a person for {hours} h: {t["who"] or "unassigned"} blocked `{t['id']}` {t['title'][:70]}. "
+                        f"Why: {t['reason'][:160] or 'see the card'}. Next: answer in the card's thread or unblock it on the board."))
+    for e in approvals_waiting():
+        at = e.get("at") or e.get("ts") or 0
+        if at and NOW.timestamp() - float(at) > 86400 and f"approval:{e['id']}" not in sent:
+            out.append((f"approval:{e['id']}", f"⏳ An approval from {e.get('profile', 'an agent')} has waited {int((NOW.timestamp() - float(at)) // 3600)} h. "
+                        f"Next: answer it in that chat (/approve or /deny)."))
+    return out
+
+
+# ---------- follow-ups ----------
+def followup_events(sent):
+    out = []
+    for f in load("followups.json", []):
+        due = parse_date(f["due"])
+        if f.get("closed") or not due or due > TODAY or f"followup:{f['id']}" in sent:
+            continue
+        out.append((f"followup:{f['id']}", f"🔁 Follow-up due ({due}): {f['text']} (set by {f.get('by', '?')}, id {f['id']}). "
+                    f"Next: check it, then `follow-up close {f['id']}`."))
+    return out
+
+
+# ---------- CI ----------
+def repos():
+    for g in glob.glob(f"{H}/work/*/.git") + glob.glob(f"{H}/work/*/*/.git"):
+        d = os.path.dirname(g)
+        rc, url = run(["git", "-C", d, "remote", "get-url", "origin"])
+        if "github.com" in url:
+            yield d, re.sub(r"^(https://github\.com/|git@github\.com:)|\.git$", "", url.strip())
+
+
+def ci_events(state):
+    out, seen = [], state.setdefault("ci_seen", {})
+    gh = f"{H}/.local/bin/gh"
+    if not os.path.exists(gh):
+        return out
+    for d, slug in repos():
+        rc, head = run(["git", "-C", d, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        branch = head.strip().split("/", 1)[-1] or "main"
+        rc, js = run([gh, "run", "list", "-R", slug, "-b", branch, "-L", "15", "--json",
+                      "databaseId,conclusion,status,workflowName,url,displayTitle"], cwd=d)
+        if rc:
+            continue
+        runs = json.loads(js or "[]")
+        first = slug not in seen
+        last = seen.get(slug, 0)
+        for r in sorted(runs, key=lambda r: r["databaseId"]):
+            if r["databaseId"] > last and r.get("status") == "completed" and r.get("conclusion") in ("failure", "timed_out", "startup_failure"):
+                if not first:
+                    out.append((f"ci:{r['databaseId']}", f"❌ CI failed on {slug} `{branch}`: {r['workflowName']} ({r['displayTitle'][:60]}). Next: open {r['url']}"))
+        done = [r["databaseId"] for r in runs if r.get("status") == "completed"]
+        seen[slug] = max([last] + done)
+    return out
+
+
+# ---------- commands ----------
+def check():
+    state = load("state.json", {})
+    sent = state.setdefault("sent", {})
+    events = []
+    for fn in (renewal_events, waiting_events, followup_events):
+        try:
+            events += fn(sent)
+        except Exception as e:  # one broken source must not hide the others
+            events.append((f"error:{fn.__name__}:{TODAY}", f"⚠️ attention: {fn.__name__} failed: {type(e).__name__}: {e}"))
+    try:
+        events += ci_events(state)
+    except Exception as e:
+        events.append((f"error:ci:{TODAY}", f"⚠️ attention: CI check failed: {type(e).__name__}: {e}"))
+    events = [(k, m) for k, m in events if k not in sent]
+    if "--dry-run" in sys.argv:  # preview: nothing is marked sent, CI baselines aren't stored
+        print("\n".join(m for _, m in events) or "(nothing new)")
+        return
+    for k, _ in events:
+        sent[k] = str(NOW)
+    cutoff = (NOW - dt.timedelta(days=120)).isoformat()
+    state["sent"] = {k: v for k, v in sent.items() if v >= cutoff}
+    save("state.json", state)
+    if events:
+        print("\n".join(m for _, m in events[:5]) + (f"\n…and {len(events) - 5} more: run `waiting-on-me`." if len(events) > 5 else ""))
+
+
+def waiting():
+    lines = []
+    for t in kanban_waiting():
+        age = f"{int((NOW.timestamp() - t['since']) // 3600)} h" if t["since"] else "?"
+        lines.append(f"- Kanban `{t['id']}` ({t["who"] or "unassigned"}, {age}): {t['title'][:80]}. Why: {t['reason'][:140] or 'see the card'}")
+    for e in approvals_waiting():
+        lines.append(f"- Approval from {e.get('profile', '?')}: {(e.get('prompt') or e.get('kind') or '')[:120]}")
+    for d in open_decisions():
+        lines.append(f"- Decision: {d[:140]}")
+    for f in load("followups.json", []):
+        if not f.get("closed"):
+            lines.append(f"- Follow-up {f['id']} due {f['due']}: {f['text'][:120]}")
+    for x in load("config.json", {}).get("review_lists", []):
+        p = os.path.expanduser(x["path"])
+        if os.path.exists(p):
+            n = sum(1 for l in open(p, encoding="utf-8") if re.match(x.get("pattern", r"^\s*[-*\d]"), l))
+            if n:
+                lines.append(f"- {x['label']}: {n} item(s) in {x['path']}")
+    print("\n".join(lines) if lines else "Nothing is waiting on you.")
+
+
+def followup(args):
+    fs = load("followups.json", [])
+    if not args or args[0] == "list":
+        for f in fs:
+            print(f"{f['id']}  due {f['due']}  {'closed' if f.get('closed') else 'open'}  {f['text']}")
+        return
+    if args[0] == "add":
+        due, by, text, i = None, os.environ.get("HERMES_PROFILE", "?"), [], 1
+        while i < len(args):
+            if args[i] == "--due":
+                due, i = args[i + 1], i + 2
+            elif args[i] == "--by":
+                by, i = args[i + 1], i + 2
+            else:
+                text.append(args[i])
+                i += 1
+        assert due and parse_date(due) and text, "usage: follow-up add --due YYYY-MM-DD [--by PROFILE] TEXT"
+        fid = f"f{len(fs) + 1}"
+        fs.append({"id": fid, "due": str(parse_date(due)), "by": by, "text": " ".join(text), "created": str(NOW)})
+        save("followups.json", fs)
+        print(f"added {fid} (due {parse_date(due)})")
+    elif args[0] == "close":
+        for f in fs:
+            if f["id"] == args[1]:
+                f.update(closed=str(NOW), note=" ".join(args[2:]))
+        save("followups.json", fs)
+        print("closed", args[1])
+
+
+def renewal_cmd(args):
+    rs = load("renewals.json", [])
+    if not args or args[0] == "list":
+        for r in sorted(renewals(), key=lambda r: str(r["date"])):
+            print(f"{r['date']}  {r['name']}  {r.get('note', '')}")
+        return
+    if args[0] == "add":
+        date = args[args.index("--date") + 1]
+        note = args[args.index("--note") + 1] if "--note" in args else ""
+        name = " ".join(a for i, a in enumerate(args[1:], 1) if a not in ("--date", "--note") and args[i - 1] not in ("--date", "--note"))
+        assert parse_date(date) and name, "usage: renewals add --date YYYY-MM-DD NAME [--note TEXT]"
+        rs = [r for r in rs if r["name"] != name] + [{"name": name, "date": str(parse_date(date)), "note": note}]
+    elif args[0] == "remove":
+        rs = [r for r in rs if r["name"] != " ".join(args[1:])]
+    save("renewals.json", rs)
+    print("ok")
+
+
+def selftest():
+    global D, TODAY
+    import tempfile
+    D = tempfile.mkdtemp()
+    assert parse_date("2026-12-01 00:00:00 +0530") == dt.date(2026, 12, 1) and parse_date("2026-11-30 00:30:02.0") == dt.date(2026, 11, 30)
+    save("renewals.json", [{"name": "x", "date": str(TODAY + dt.timedelta(days=5)), "note": "n"}])
+    save("auto-cache.json", {"github": {"checked": str(TODAY), "dates": {}}, "domains": {"checked": str(TODAY), "dates": {}}, "broker_checked": str(TODAY)})
+    ev = renewal_events({})
+    assert len(ev) == 1 and "in 5 day" in ev[0][1], ev
+    assert renewal_events({ev[0][0]: "x"}) == []
+    save("followups.json", [{"id": "f1", "due": str(TODAY), "text": "t"}, {"id": "f2", "due": str(TODAY + dt.timedelta(days=3)), "text": "u"}])
+    fe = followup_events({})
+    assert [k for k, _ in fe] == ["followup:f1"], fe
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    name, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+    if "--selftest" in args:
+        selftest()
+    elif name == "waiting-on-me" or args[:1] == ["waiting"]:
+        waiting()
+    elif name == "follow-up" or args[:1] == ["follow-up"]:
+        followup(args[1:] if args[:1] == ["follow-up"] else args)
+    elif name == "renewals" or args[:1] == ["renewals"]:
+        renewal_cmd(args[1:] if args[:1] == ["renewals"] else args)
+    elif args[:1] == ["check"]:
+        check()
+    else:
+        print(__doc__)

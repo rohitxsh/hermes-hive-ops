@@ -1,0 +1,115 @@
+#!/usr/bin/python3
+"""kanban-feed (the owner, 2026-10-31): one line per Kanban task change in an "activity" Discord thread, no LLM.
+Started, review requested, done, blocked, gave up, reassigned, unblocked and new tasks. Config ~/agents/kanban-feed/config.json:
+{"thread": "<discord thread id>", "prefix": "<assignee/creator prefix or empty for all>"}. State (event cursor) in the
+same folder; the first run starts at the newest event so history isn't replayed. Posts with the bot token from the sealed
+credential (never printed), mentions disabled. Silent on success; prints the problem and exits 1 otherwise.
+Usage: kanban-feed [--dry-run]"""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+
+HOME = os.path.expanduser("~")
+DIR = f"{HOME}/agents/kanban-feed"
+DB = f"{HOME}/.hermes/kanban.db"
+KINDS = ("created", "claimed", "review_requested", "completed", "blocked", "gave_up", "assigned", "unblocked")
+MAX_LINES = 30
+
+
+def short(text, n):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def line(kind, p, title, assignee, creator, tid):
+    t, who, tag = f"**{short(title, 90)}**", f"`{assignee or 'unassigned'}`", f" ({tid})"
+    if kind == "created":
+        return f"🆕 {t} → {who}" + (f", from `{creator}`" if creator and creator != "user" else "") + tag
+    if kind == "claimed":
+        return (f"▶️ {who} picked up {t} for review/rework" if p.get("source_status") == "review" else f"▶️ {who} started {t}") + tag
+    if kind == "review_requested":
+        return f"👀 {t}: review requested. {short(p.get('summary'), 160)}{tag}"
+    if kind == "completed":
+        return f"✅ {who} finished {t}. {short(p.get('summary') or p.get('result'), 180)}{tag}"
+    if kind == "blocked":
+        return f"⛔ {t} blocked ({who}): {short(p.get('reason') or p.get('summary'), 180)}{tag}"
+    if kind == "gave_up":
+        return f"⚠️ {t}: gave up after {p.get('failures', '?')} attempt(s). {short(p.get('error'), 140)}{tag}"
+    if kind == "assigned":
+        return f"↪️ {t}: `{p.get('from') or '?'}` → `{p.get('to') or p.get('assignee') or assignee}`{tag}"
+    if kind == "unblocked":
+        return f"🔓 {t} unblocked{tag}"
+    return None
+
+
+def events(cursor, prefix):
+    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=30)
+    try:
+        top = c.execute("select coalesce(max(id), 0) from task_events").fetchone()[0]
+        if cursor is None:
+            return [], top
+        q = (f"select e.id, e.kind, e.payload, t.title, t.assignee, t.created_by, t.id from task_events e join tasks t "
+             f"on t.id = e.task_id where e.id > ? and e.kind in ({','.join('?' * len(KINDS))}) order by e.id")
+        out = []
+        for eid, kind, payload, title, assignee, creator, tid in c.execute(q, (cursor, *KINDS)):
+            if prefix and not any(str(x or "").startswith(prefix) for x in (assignee, creator)):
+                continue
+            try:
+                p = json.loads(payload or "{}")
+            except ValueError:
+                p = {}
+            text = line(kind, p if isinstance(p, dict) else {}, title, assignee, creator, tid)
+            if text:
+                out.append(text)
+        return out, top
+    finally:
+        c.close()
+
+
+def post(thread, lines):
+    tok = subprocess.run(["sudo", "-n", "systemd-creds", "decrypt", "/etc/credstore.encrypted/discord_bot_token", "-"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    chunks, cur = [], ""
+    for ln in lines:
+        if len(cur) + len(ln) + 1 > 1900:
+            chunks.append(cur)
+            cur = ""
+        cur += ln + "\n"
+    chunks.append(cur)
+    for body in chunks:
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/channels/{thread}/messages", method="POST",
+            data=json.dumps({"content": body.rstrip(), "allowed_mentions": {"parse": []}}).encode(),
+            headers={"Authorization": "Bot " + tok, "Content-Type": "application/json", "User-Agent": "DiscordBot (kanban-feed, 1.0)"})
+        urllib.request.urlopen(req, timeout=20).read()
+
+
+def main():
+    cfg = json.load(open(f"{DIR}/config.json"))
+    state_path = f"{DIR}/state.json"
+    state = json.load(open(state_path)) if os.path.exists(state_path) else {}
+    lines, top = events(state.get("cursor"), cfg.get("prefix") or "")
+    if len(lines) > MAX_LINES:
+        lines = lines[:MAX_LINES] + [f"…and {len(lines) - MAX_LINES} more (`hermes kanban list`)"]
+    if "--dry-run" in sys.argv:
+        print("\n".join(lines) or f"nothing new (cursor {state.get('cursor')}, newest event {top})")
+        return
+    if lines:
+        post(cfg["thread"], lines)
+    state["cursor"] = top  # advanced only after a successful post
+    tmp = state_path + ".tmp"
+    json.dump(state, open(tmp, "w"))
+    os.replace(tmp, state_path)
+
+
+if __name__ == "__main__":
+    assert line("claimed", {"source_status": "review"}, "QA", "team-qa", "team-dev", "t_1").startswith("▶️ `team-qa` picked up")
+    assert line("heartbeat", {}, "x", "a", "b", "t") is None and short("a  b\nc", 10) == "a b c"
+    try:
+        main()
+    except Exception as e:  # noqa: BLE001 - one line for the issue list, then fail the job
+        print(f"kanban-feed failed: {type(e).__name__}: {e}")
+        sys.exit(1)
