@@ -63,6 +63,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `camofox-410-apply.py`, `upload-selector-apply.py` | Camofox: recover from dead tabs; reliable file-upload selectors |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence |
 | `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones |
+| `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer every few minutes |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
 | `cron-shared-bot-delivery.patch`, `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Cron delivery with a shared bot; slash-command auth with a late dependency; opt-in team `@here` notifications |
 
