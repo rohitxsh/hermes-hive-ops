@@ -187,13 +187,31 @@ def approvals_waiting():
     return [e for i, e in req.items() if i not in done]
 
 
+def unanswered(headings, open_md):
+    """Decision headings whose issue is still marked asked/blocked in open.md (answered or fixed ones drop out)."""
+    waiting = {m.group(1) for m in re.finditer(r"^\| ([0-9a-f]{6}) \|.*\[\w+: (?:asked|blocked)\]", open_md, re.M)}
+    return [h for h in headings if waiting & set(re.findall(r"\b[0-9a-f]{6}\b", h))]
+
+
 def open_decisions():
     out = []
+    issues = f"{H}/agents/issues/open.md"
+    open_md = open(issues, encoding="utf-8").read() if os.path.exists(issues) else ""
     for f in [f"{H}/agents/issues/decisions.md"] + load("config.json", {}).get("decision_files", []):
         f = os.path.expanduser(f)
         if os.path.exists(f):
-            out += [l[3:].strip() for l in open(f, encoding="utf-8") if l.startswith("## ")]
+            out += unanswered([l[3:].strip() for l in open(f, encoding="utf-8") if l.startswith("## ")], open_md)
     return out
+
+
+def review_items(lines, pattern):
+    """List items still to decide. An APPROVED line settles its batch (items above or right below it);
+    only items under a heading added after the last APPROVED line count."""
+    ok = [i for i, l in enumerate(lines) if l.startswith("APPROVED")]
+    if ok:
+        new = [i for i, l in enumerate(lines) if i > ok[-1] and l.startswith("#")]
+        lines = lines[new[0]:] if new else []
+    return sum(1 for l in lines if re.match(pattern, l))
 
 
 def waiting_events(sent):
@@ -353,7 +371,7 @@ def waiting():
     for x in load("config.json", {}).get("review_lists", []):
         p = os.path.expanduser(x["path"])
         if os.path.exists(p):
-            n = sum(1 for l in open(p, encoding="utf-8") if re.match(x.get("pattern", r"^\s*[-*\d]"), l))
+            n = review_items(open(p, encoding="utf-8").read().splitlines(), x.get("pattern", r"^\s*[-*\d]"))
             if n:
                 lines.append(f"- {x['label']}: {n} item(s) in {x['path']}")
     print("\n".join(lines) if lines else "Nothing is waiting on you.")
@@ -410,6 +428,11 @@ def selftest():
     global D, TODAY
     import tempfile
     D = tempfile.mkdtemp()
+    om = "| abc123 | x | [assistant: asked] q |\n| def456 | x | 11-01: assistant (fixed): done |\n"
+    assert unanswered(["2026-11-01 - abc123: open one", "2026-11-01 — def456 — answered", "2026-10-30 — 0e5e7f / abc123 — pair"], om) == ["2026-11-01 - abc123: open one", "2026-10-30 — 0e5e7f / abc123 — pair"]
+    pat = r"^\s*-\s"
+    assert review_items(["# batch", "APPROVED 2026-11-01: all", "- a", "- b"], pat) == 0 and review_items(["- a", "- b"], pat) == 2
+    assert review_items(["- a", "APPROVED: all", "- b", "# batch 2", "- c"], pat) == 1
     assert parse_date("2026-12-01 00:00:00 +0530") == dt.date(2026, 12, 1) and parse_date("2026-11-30 00:30:02.0") == dt.date(2026, 11, 30)
     save("renewals.json", [{"name": "x", "date": str(TODAY + dt.timedelta(days=5)), "note": "n"}])
     save("auto-cache.json", {"github": {"checked": str(TODAY), "dates": {}}, "domains": {"checked": str(TODAY), "dates": {}}, "broker_checked": str(TODAY)})
