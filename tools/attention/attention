@@ -287,7 +287,12 @@ def pr_approved(slug, num, since, owner):
                   "state,reviewDecision,labels,comments,mergedAt,reviews"], timeout=60)
     if rc:
         return False, "unreadable"
-    d = json.loads(js or "{}")
+    return pr_verdict(json.loads(js or "{}"), since, owner, load("config.json", {}).get("agent_github_logins", []))
+
+
+def pr_verdict(d, since, owner, agents=()):
+    """(True, why) approved/merged; ("changes", why) a reviewer asked for changes or a person commented after the
+    card was blocked; (False, "waiting") otherwise. agents: the agents' own GitHub logins (their comments don't count)."""
     if d.get("state") == "MERGED":
         return True, "merged"
     if d.get("reviewDecision") == "APPROVED":
@@ -300,6 +305,17 @@ def pr_approved(slug, num, since, owner):
         when = c.get("createdAt") or c.get("submittedAt") or ""
         if owner and who == owner.lower() and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
             return True, f"approved in a comment by {who}"
+    bots = {a.lower() for a in agents}
+    for c in d.get("reviews") or []:
+        who = ((c.get("author") or {}).get("login") or "").lower()
+        if (c.get("submittedAt") or "") >= after and c.get("state") == "CHANGES_REQUESTED" and who not in bots:
+            return "changes", f"changes requested by {who}"
+    if bots:
+        for c in (d.get("comments") or []) + (d.get("reviews") or []):
+            who = ((c.get("author") or {}).get("login") or "").lower()
+            when = c.get("createdAt") or c.get("submittedAt") or ""
+            if who and who not in bots and when >= after and (c.get("body") or "").strip():
+                return "changes", f"review comment by {who}"
     return False, "waiting"
 
 
@@ -320,7 +336,17 @@ def pr_resume():
         if not prs:
             continue
         results = [(slug, num, *pr_approved(slug, num, t["since"], owner)) for slug, num in prs]
-        if all(ok for *_, ok, _ in results):
+        fb = [(slug, num, w) for slug, num, ok, w in results if ok == "changes"]
+        if fb:
+            why = "; ".join(f"{slug}#{num} {w}" for slug, num, w in fb)
+            rc, out = run([f"{H}/.local/bin/hermes", "kanban", "unblock", t["id"], "--reason",
+                           f"Review feedback: {why}. Read the PR review and comments, address them on this card, "
+                           f"then block it again with the PR URL to wait for approval."])
+            if rc == 0:
+                done[t["id"]] = t["since"]
+                print(f"💬 {t['id']} ({t['who']}) resumed for review feedback: {why}")
+            continue
+        if all(ok is True for *_, ok, _ in results):
             why = "; ".join(f"{slug}#{num} {w}" for slug, num, _, w in results)
             rc, out = run([f"{H}/.local/bin/hermes", "kanban", "unblock", t["id"], "--reason",
                            f"Resumed automatically: {why}. Carry on with the approved work."])
@@ -431,6 +457,14 @@ def selftest():
     D = tempfile.mkdtemp()
     om = "| abc123 | x | [assistant: asked] q |\n| def456 | x | 11-01: assistant (fixed): done |\n"
     assert unanswered(["2026-11-01 - abc123: open one", "2026-11-01 — def456 — answered", "2026-10-30 — 0e5e7f / abc123 — pair"], om) == ["2026-11-01 - abc123: open one", "2026-10-30 — 0e5e7f / abc123 — pair"]
+    since = dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc).timestamp()
+    rv = lambda who, st, when="2026-11-02T10:00:00Z", body="": {"author": {"login": who}, "state": st, "submittedAt": when, "body": body}
+    assert pr_verdict({"reviewDecision": "APPROVED"}, since, "") == (True, "approved in review")
+    assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED")]}, since, "")[0] == "changes"
+    assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED", "2026-11-01T10:00:00Z")]}, since, "") == (False, "waiting")
+    assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "rename this"}]}, since, "", ["example-owner"])[0] == "changes"
+    assert pr_verdict({"comments": [{"author": {"login": "example-owner"}, "createdAt": "2026-11-02T11:00:00Z", "body": "status"}]}, since, "", ["example-owner"]) == (False, "waiting")
+    assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "x"}]}, since, "") == (False, "waiting")
     pat = r"^\s*-\s"
     assert unanswered(["x — abc123 — y"], "## Resolved (1)\n| abc123 | x | [assistant: asked] q |\n") == []
     assert review_items(["# batch", "APPROVED 2026-11-01: all", "- a", "- b"], pat) == 0 and review_items(["- a", "- b"], pat) == 2
