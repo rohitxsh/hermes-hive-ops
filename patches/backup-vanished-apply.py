@@ -47,7 +47,7 @@ def selftest():
     nf = FileNotFoundError(2, "No such file or directory")
     assert b._vanished_ok("cron/output/039c/2026-11-01_18-10-06.md", nf)
     assert b._vanished_ok("cron/admissions/289e.json", nf)
-    assert b._vanished_ok("profiles/dev/cron/external-workers/19.stderr", nf)
+    assert b._vanished_ok("profiles/project-dev/cron/external-workers/19.stderr", nf)
     assert not b._vanished_ok("cron/jobs.json", nf)                       # durable cron state still fails
     assert not b._vanished_ok("state.db", nf)
     assert not b._vanished_ok("cron/output/x.md", PermissionError(13, "denied"))  # unreadable still fails
