@@ -1,6 +1,6 @@
 ---
 name: consult-assistant
-description: Ask the owner's main assistant profile (Discord #assistant, which holds his broad memory and history) a question and get its answer. Use when you need context about the owner, his preferences or past decisions that your own profile doesn't have, or want a second opinion.
+description: Ask the owner's main assistant profile (Discord #assistant, which holds their broad memory and history) a question and get its answer. Use when you need context about the owner, their preferences or past decisions that your own profile doesn't have, or want a second opinion.
 ---
 
 # Consult the assistant profile

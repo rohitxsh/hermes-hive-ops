@@ -3,13 +3,13 @@
 #   setup/install.sh                  all steps except services and devtools (those need sudo / downloads)
 #   setup/install.sh --steps a,b      only these steps
 #   setup/install.sh --dry-run        print what each step would do
-# Steps, in order: bin tools plugins patches skills third-party config soul jobs brain health [services devtools]
+# Steps, in order: bin tools plugins patches skills third-party config soul health jobs brain [services devtools]
 set -euo pipefail
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 SETUP="$KIT/setup"
 [ -f "$SETUP/settings.env" ] || { echo "Copy setup/settings.env.example to setup/settings.env and fill it in first."; exit 1; }
 set -a; . "$SETUP/settings.env"; set +a
-STEPS="bin tools plugins patches skills third-party config soul jobs brain health"
+STEPS="bin tools plugins patches skills third-party config soul health jobs brain"   # health before jobs: the self-check job needs its script
 DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -73,11 +73,8 @@ step_patches() {  # local fixes to Hermes; re-run this step after every `hermes 
 step_skills() {  # kit skills: shared ones for every non-locked profile through skills.external_dirs
   run mkdir -p "$HOME/agents/shared-skills"
   for d in "$KIT"/skills/*/; do run rm -rf "$HOME/agents/shared-skills/$(basename "$d")"; run cp -r "$d" "$HOME/agents/shared-skills/"; done
-  if [ -n "${GITHUB_OWNER:-}" ] && [ "$DRY" = 0 ]; then
-    grep -rl "<github-owner>" "$HOME/agents/shared-skills" | xargs -r sed -i "s/<github-owner>/$GITHUB_OWNER/g"
-  fi
 }
-step_third_party() { run bash "$SETUP/third-party/install.sh"; }
+step_third_party() { run bash "$SETUP/third-party/install.sh" || echo "  ! some third-party installs failed (see above); continuing"; }
 step_config() { "$VENV_PY" "$SETUP/config/apply-overlay.py"; }        # these four print their plan when DRY=1
 step_soul() { "$VENV_PY" "$SETUP/soul/apply-sections.py"; }
 step_jobs() { "$VENV_PY" "$SETUP/jobs/create-jobs.py"; }

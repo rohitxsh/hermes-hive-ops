@@ -46,11 +46,11 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
 
 ## Requesting the owner's review
 
-When a PR needs the owner (your SOUL says so, for example a `human-signoff` PR, or he asked to see it):
+When a PR needs the owner (your SOUL says so, for example a `human-signoff` PR, or they asked to see it):
 1. `gh pr edit <pr> --add-assignee example --add-label needs-owner-review`
 2. `gh pr edit <pr> --add-reviewer example`. GitHub refuses this while PRs are opened from the owner's own account ("Review cannot be requested from pull request author"); that's expected, so carry on.
-3. Post in your Discord channel: the PR link, why it needs him, and what to check.
-4. Don't merge until he approves: an approving review on GitHub, or "approved" / "merge it" from him in chat. Then remove the `needs-owner-review` label and merge as usual.
+3. Post in your Discord channel: the PR link, why it needs them, and what to check.
+4. Don't merge until they approve: an approving review on GitHub, or "approved" / "merge it" from them in chat. Then remove the `needs-owner-review` label and merge as usual.
 
 ## 3. Review, then merge or send back
 

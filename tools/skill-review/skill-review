@@ -55,7 +55,7 @@ def own_skills():
 def scan(days):
     since = time.time() - days * 86400
     loads, reloads, sessions, halted = collections.Counter(), collections.Counter(), collections.defaultdict(set), collections.Counter()
-    for db in [f"{HH}/state.db"] + glob.glob(f"{HH}/profiles/*/state.db"):
+    for db in glob.glob(f"{HH}/state.db") + glob.glob(f"{HH}/profiles/*/state.db"):
         c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
         halts = {s for s, in c.execute("select distinct session_id from messages where timestamp > ? and role='assistant' and content like 'I stopped retrying because I kept running%'", (since,))}
         seen = collections.Counter()

@@ -37,7 +37,7 @@ def fmt_min(sec):
 
 
 def profiles(only):
-    out = [("default", H)] + [(os.path.basename(d), d) for d in sorted(glob.glob(f"{H}/profiles/*")) if os.path.isfile(f"{d}/state.db")]
+    out = [(n, d) for n, d in [("default", H)] + [(os.path.basename(d), d) for d in sorted(glob.glob(f"{H}/profiles/*"))] if os.path.isfile(f"{d}/state.db")]
     return [(n, h) for n, h in out if not only or n == only]
 
 

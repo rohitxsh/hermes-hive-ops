@@ -1,9 +1,12 @@
 """Local Hermes patch (2026-10-26, owner: "run everything in smart mode"): approvals.cron_mode / unattended_mode /
 single_query_mode accept "smart". In those unattended runs the smart guardian judges a flagged command or execute_code
 script: APPROVE runs it, anything else is refused (nobody can answer an escalation). Hardline floors and deny rules still
-apply first; other flagged tool/file actions stay denied in smart unattended runs. Run from ~/.hermes/hermes-agent."""
+apply first; other flagged tool/file actions stay denied in smart unattended runs. Paths are relative to ~/.hermes/hermes-agent."""
+import os
 import pathlib
 import sys
+
+os.chdir(os.path.expanduser("~/.hermes/hermes-agent"))
 
 MARK = "local patch (vm-a 2026-10-26): smart unattended approvals"
 NL = chr(10)

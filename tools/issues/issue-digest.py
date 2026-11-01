@@ -243,7 +243,7 @@ def escalate(state, handled, now):
         r["escalated"] = now
         h = handled.get(r.get("id"))
         if r.get("resolved_at") or r.get("known") or (h and h.get("reopened", 0) >= r.get("reopened", 0)):
-            continue  # closed, known, or the handler dealt with it (it tells the owner itself when he's needed)
+            continue  # closed, known, or the handler dealt with it (it tells the owner itself when they're needed)
         out.append(f"- `{r['id']}` {', '.join(r['profiles'])} · {r['level']}{' (back again)' if r.get('reopened') else ''} "
                    f"{r['source']}: {r['sample'][:220]}")
     return out

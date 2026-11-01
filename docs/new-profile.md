@@ -61,7 +61,7 @@ bash ~/.hermes/scripts/agent-health.sh                                       # m
   - `terminal.cwd` and the work folder: move it, then set the cwd again;
   - mentions in other profiles' SOULs and in ~/agents/src sources: search for the old name (and role words);
   - open Kanban tasks: `hermes kanban reassign <task> <new>`;
-  - Discord thread names: renamed through the bot API with the sealed bot token, as in ~/agents/src/project-threads/create.py. The owner renames channels himself.
+  - Discord thread names: renamed through the Discord bot API with the sealed bot token. The owner renames channels themselves.
 - **Then** restart with hermes-restart-idle and run the same checks.
 
 ## Never

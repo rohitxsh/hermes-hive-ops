@@ -13,6 +13,9 @@ new = (f"""      // {MARK}: a selector naming a file input wins over the page's 
         ? await named.evaluate(el => el.tagName === 'INPUT' && el.type === 'file', null, {{ timeout: 2000 }}).catch(() => false)
         : false;
       const directInput = namedIsInput ? named : tabState.page.locator('input[type="file"]').first();""")
+if not os.path.exists(p):
+    print("camofox not installed: nothing to patch")
+    raise SystemExit
 s = open(p).read()
 if MARK in s:
     print("already patched")

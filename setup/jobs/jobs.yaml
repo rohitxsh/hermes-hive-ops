@@ -11,7 +11,7 @@
 - {name: memory learn, schedule: "30 3 * * *", script: memory-learn.py, deliver: admin}
 - {name: hermes update notice, schedule: "0 */6 * * *", script: hermes-update-notice.py, deliver: admin}
 - {name: attention check, schedule: "every 30m", script: attention-check.sh, deliver: admin}
-- {name: pr resume, schedule: "every 5m", script: pr-resume.sh, deliver: local, needs: ~/.hermes/kanban.db}
+- {name: pr resume, schedule: "every 5m", script: pr-resume.sh, deliver: local}
 - {name: kanban feed, schedule: "*/2 * * * *", script: kanban-feed.py, deliver: local, needs: ~/agents/kanban-feed/config.json}
 - name: skill review
   schedule: "0 10 * * 0"

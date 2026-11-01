@@ -11,7 +11,7 @@ It is one way of running Hermes, not the only one. Everything here ran in produc
 git clone https://github.com/rohitxsh/hermes-ops-kit && cd hermes-ops-kit
 cp setup/settings.env.example setup/settings.env      # fill it in (nothing secret)
 setup/install.sh --dry-run                            # see what it would do
-setup/install.sh                                      # bin tools plugins patches skills third-party config soul jobs brain health
+setup/install.sh                                      # bin tools plugins patches skills third-party config soul health jobs brain
 sudo setup/services/install-services.sh "$USER" hermes   # optional: run the gateway as a systemd service
 setup/devtools/install-devtools.sh claude codex gh    # optional: coding CLIs for coding agents
 hermes-restart-idle                                   # restart the gateway when no turn is running
@@ -78,7 +78,7 @@ wrapper), `report-issue`, `vault-fill`.
 
 ### `skills/`
 `claude-code-tickets` (coding work through Claude Code, Codex as fallback), `consult-assistant`, `vault-logins`,
-`markitdown`, `interactive-visuals`. Placeholders like `<github-owner>` are filled from `settings.env`.
+`markitdown`, `interactive-visuals`.
 
 ## Third-party pieces (installed by `setup/third-party/install.sh`, not copied here)
 
