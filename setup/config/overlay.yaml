@@ -41,7 +41,7 @@ display:
       tool_progress: log            # tool calls go to logs/tool_calls.log, not the chat
       suppress_warning_notifications: true
 streaming:
-  enabled: true                     # replies appear in chat as they are written
+  enabled: false                    # on Discord, a plugin appending to a streamed reply past 2,000 chars re-posted it
 memory:
   provider: holographic             # see setup/third-party (catalog plugin)
   memory_char_limit: 4400

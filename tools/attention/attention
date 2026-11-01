@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""attention (2026-11-01, the owner: Duet/dots/Grok-inspired features, no morning briefs). No model calls.
+"""attention (2026-11-01, Rohit: Duet/dots/Grok-inspired features, no morning briefs). No model calls.
 
   attention check            scheduled (Hermes cron, no agent): prints only NEW events, so nothing is posted when
                              nothing happened: renewals due in <=7 days, <=1 day or expired (GitHub tokens and the broker's
@@ -9,6 +9,9 @@
   waiting-on-me              everything currently waiting on a person, across all agents on this VM
   follow-up add --due DATE [--by PROFILE] TEXT | close ID [NOTE] | list
   renewals add --date DATE NAME [--note TEXT] | remove NAME | list
+  attention pr-resume        scheduled every few minutes: unblocks a blocked Kanban card whose GitHub PR (full URL in the
+                             card) was approved, merged, labelled `approved`, or approved in a comment by the owner
+                             (config github_owner) after the card was blocked; the agent then carries on by itself
   attention --selftest
 State and lists: ~/agents/attention/ (state.json, followups.json, renewals.json, config.json). Tokens are read only in
 memory; only expiry dates are cached."""
@@ -61,6 +64,15 @@ def parse_date(s):
         return dt.date(int(y), int(mo), int(d))
     except ValueError:
         return None
+
+
+def clip(text, n):
+    """At most n characters, cut at a word boundary with an ellipsis (never mid-word)."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= n:
+        return text
+    cut = text[:n - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut[n // 2:] else cut).rstrip(" ,;:.") + "…"
 
 
 # ---------- renewals ----------
@@ -189,8 +201,9 @@ def waiting_events(sent):
     for t in kanban_waiting():
         if t["since"] and NOW.timestamp() - t["since"] > 86400 and f"kanban:{t['id']}:{t['since']}" not in sent:
             hours = int((NOW.timestamp() - t["since"]) // 3600)
-            out.append((f"kanban:{t['id']}:{t['since']}", f"⏳ Waiting on a person for {hours} h: {t["who"] or "unassigned"} blocked `{t['id']}` {t['title'][:70]}. "
-                        f"Why: {t['reason'][:160] or 'see the card'}. Next: answer in the card's thread or unblock it on the board."))
+            out.append((f"kanban:{t['id']}:{t['since']}", f"⏳ Waiting on a person for {hours} h: {t.get('who') or 'unassigned'} blocked `{t['id']}` {clip(t['title'], 160)}. "
+                        f"Why: {clip(t['reason'], 700) or 'see the card'}. Full card: `hermes kanban show {t['id']}`. "
+                        f"Next: answer in the card's thread or unblock it on the board."))
     for e in approvals_waiting():
         at = e.get("at") or e.get("ts") or 0
         if at and NOW.timestamp() - float(at) > 86400 and f"approval:{e['id']}" not in sent:
@@ -244,6 +257,60 @@ def ci_events(state):
     return out
 
 
+# ---------- PR approval -> resume ----------
+PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+APPROVE_WORDS = re.compile(r"^\s*(approved?|lgtm|looks good|ship it)\b", re.I)
+
+
+def pr_approved(slug, num, since, owner):
+    """(approved, why) for one PR, via the gh wrapper (it picks the repo's sealed token from -R)."""
+    rc, js = run([f"{H}/.local/bin/gh", "pr", "view", str(num), "-R", slug, "--json",
+                  "state,reviewDecision,labels,comments,mergedAt,reviews"], timeout=60)
+    if rc:
+        return False, "unreadable"
+    d = json.loads(js or "{}")
+    if d.get("state") == "MERGED":
+        return True, "merged"
+    if d.get("reviewDecision") == "APPROVED":
+        return True, "approved in review"
+    if any((l.get("name") or "").lower() in ("approved", "owner-approved") for l in d.get("labels") or []):
+        return True, "labelled approved"
+    after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
+    for c in (d.get("comments") or []) + (d.get("reviews") or []):
+        who = ((c.get("author") or {}).get("login") or "").lower()
+        when = c.get("createdAt") or c.get("submittedAt") or ""
+        if owner and who == owner.lower() and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
+            return True, f"approved in a comment by {who}"
+    return False, "waiting"
+
+
+def pr_resume():
+    db = f"{H}/.hermes/kanban.db"
+    if not os.path.exists(db):
+        return
+    owner = load("config.json", {}).get("github_owner", "")
+    state = load("state.json", {})
+    done = state.setdefault("pr_resumed", {})
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    for t in kanban_waiting():
+        if done.get(t["id"]) == t["since"]:
+            continue
+        body = (c.execute("select coalesce(body,'') from tasks where id=?", (t["id"],)).fetchone() or [""])[0]
+        comments = " ".join(b for b, in c.execute("select body from task_comments where task_id=? order by created_at desc limit 5", (t["id"],)))
+        prs = sorted(set(PR_URL.findall(" ".join([t["title"] or "", body, t["reason"] or "", comments]))))
+        if not prs:
+            continue
+        results = [(slug, num, *pr_approved(slug, num, t["since"], owner)) for slug, num in prs]
+        if all(ok for *_, ok, _ in results):
+            why = "; ".join(f"{slug}#{num} {w}" for slug, num, _, w in results)
+            rc, out = run([f"{H}/.local/bin/hermes", "kanban", "unblock", t["id"], "--reason",
+                           f"Resumed automatically: {why}. Carry on with the approved work."])
+            if rc == 0:
+                done[t["id"]] = t["since"]
+                print(f"🔓 {t['id']} ({t['who']}) resumed: {why}")
+    save("state.json", state)
+
+
 # ---------- commands ----------
 def check():
     state = load("state.json", {})
@@ -275,9 +342,9 @@ def waiting():
     lines = []
     for t in kanban_waiting():
         age = f"{int((NOW.timestamp() - t['since']) // 3600)} h" if t["since"] else "?"
-        lines.append(f"- Kanban `{t['id']}` ({t["who"] or "unassigned"}, {age}): {t['title'][:80]}. Why: {t['reason'][:140] or 'see the card'}")
+        lines.append(f"- Kanban `{t['id']}` ({t.get('who') or 'unassigned'}, {age}): {clip(t['title'], 160)}. Why: {clip(t['reason'], 700) or 'see the card'}")
     for e in approvals_waiting():
-        lines.append(f"- Approval from {e.get('profile', '?')}: {(e.get('prompt') or e.get('kind') or '')[:120]}")
+        lines.append(f"- Approval from {e.get('profile', '?')}: {clip(e.get('prompt') or e.get('kind') or '', 400)}")
     for d in open_decisions():
         lines.append(f"- Decision: {d[:140]}")
     for f in load("followups.json", []):
@@ -352,6 +419,9 @@ def selftest():
     save("followups.json", [{"id": "f1", "due": str(TODAY), "text": "t"}, {"id": "f2", "due": str(TODAY + dt.timedelta(days=3)), "text": "u"}])
     fe = followup_events({})
     assert [k for k, _ in fe] == ["followup:f1"], fe
+    assert clip("one two three four", 12) == "one two…" and clip("short", 10) == "short" and len(clip("x" * 50, 20)) == 20
+    assert PR_URL.findall("see https://github.com/a/b/pull/3 and PR #4") == [("a/b", "3")]
+    assert APPROVE_WORDS.match("Approved, go ahead") and APPROVE_WORDS.match("LGTM") and not APPROVE_WORDS.match("not approved")
     print("selftest ok")
 
 
@@ -367,5 +437,7 @@ if __name__ == "__main__":
         renewal_cmd(args[1:] if args[:1] == ["renewals"] else args)
     elif args[:1] == ["check"]:
         check()
+    elif args[:1] == ["pr-resume"]:
+        pr_resume()
     else:
         print(__doc__)

@@ -39,6 +39,15 @@ def where(session_key, profile):
     return who, (f"<#{chat}>" if chat else (parts[2] if len(parts) > 2 else "its chat"))
 
 
+def _clip(text, n):
+    """At most n characters, cut at a word boundary with an ellipsis."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= n:
+        return text
+    cut = text[:n - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut[n // 2:] else cut).rstrip(" ,;:.") + "…"
+
+
 def pending(records, notified, now):
     """New lines to announce, and the ids they cover."""
     resolved = {r["id"] for r in records if r.get("event") == "resolved"}
@@ -50,7 +59,7 @@ def pending(records, notified, now):
         if r.get("event") == "request" and rid not in resolved and GRACE <= now - r["at"] <= MAX_AGE:
             who, chan = where(r.get("session_key"), r.get("profile"))
             what = KIND.get(r.get("kind"), f"respond ({r.get('kind')})")
-            prompt = " ".join((r.get("prompt") or "").split())[:160]
+            prompt = _clip(r.get("prompt"), 300)
             discord = ":discord:" in (r.get("session_key") or "") and r.get("kind") == "approval"
             if not discord or now - r["at"] < BUTTONS:
                 if rid not in notified:
@@ -58,12 +67,12 @@ def pending(records, notified, now):
                     lines.append(f"• **{who}** is waiting for you to {what} in {chan}" + (f": `{prompt}`" if prompt else "") + hint)
                     ids.append(rid)
             elif rid + ":expired" not in notified:
-                lines.append(f"• **{who}** is still waiting in {chan}" + (f" (`{prompt[:80]}`)" if prompt else "") +
+                lines.append(f"• **{who}** is still waiting in {chan}" + (f" (`{_clip(prompt, 160)}`)" if prompt else "") +
                              ": the buttons have expired, but the request stays open. Type `/approve` (or `/approve session`) or `/deny` there.")
                 ids += [rid, rid + ":expired"]
         elif r.get("event") == "kanban_blocked" and rid not in notified:
-            reason = " ".join((r.get("reason") or "").split())[:160]
-            lines.append(f"• Kanban task {r.get('task_id')} ({r.get('assignee') or 'unassigned'}) is blocked on you" + (f": {reason}" if reason else ""))
+            reason = _clip(r.get("reason"), 700)
+            lines.append(f"• Kanban task {r.get('task_id')} ({r.get('assignee') or 'unassigned'}) is blocked on you" + (f": {reason}" if reason else "") + f" (full card: `hermes kanban show {r.get('task_id')}`)")
             ids.append(rid)
     return lines, ids
 

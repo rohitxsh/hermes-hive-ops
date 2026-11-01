@@ -48,10 +48,14 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
     run install -m 755 "$SRC/${s%%:*}" "$HH/scripts/${s##*:}"
   done
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention check\n' "$SRC" > "$HH/scripts/attention-check.sh"
-  run chmod 755 "$HH/scripts/attention-check.sh"
-  if [ -n "${ATTENTION_DOMAINS:-}" ] && [ ! -f "$HOME/agents/attention/config.json" ] && [ "$DRY" = 0 ]; then
+  [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention pr-resume\n' "$SRC" > "$HH/scripts/pr-resume.sh"
+  run chmod 755 "$HH/scripts/attention-check.sh" "$HH/scripts/pr-resume.sh"
+  if [ "$DRY" = 0 ]; then  # attention settings: watched domains, and whose "approved" PR comments resume a wait
     mkdir -p "$HOME/agents/attention"
-    python3 -c "import json,sys;json.dump({'domains':sys.argv[1].split()},open(sys.argv[2],'w'),indent=1)" "$ATTENTION_DOMAINS" "$HOME/agents/attention/config.json"
+    python3 -c "import json,os,sys
+p=sys.argv[3]; c=json.load(open(p)) if os.path.exists(p) else {}
+c.update({k: v for k, v in (('domains', sys.argv[1].split()), ('github_owner', sys.argv[2])) if v})
+json.dump(c, open(p, 'w'), indent=1)" "${ATTENTION_DOMAINS:-}" "${GITHUB_OWNER:-}" "$HOME/agents/attention/config.json"
   fi
 }
 step_plugins() {  # every kit plugin into every profile's plugins/ (enabling happens in the config step)

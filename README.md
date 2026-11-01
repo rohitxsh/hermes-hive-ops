@@ -41,7 +41,7 @@ tells you when an update dropped a patch).
 | Part | What it does |
 |---|---|
 | `install.sh`, `settings.env.example` | Orchestrates every step below from your settings |
-| `config/overlay.yaml`, `locked.yaml` | The settings this kit runs with (smart approvals with a written policy and deny list, compression at 200k tokens, streaming, queued input, tool lines kept out of chat, loop-guard limits, holographic memory, SearXNG search, local extraction, Camofox browser, sealed secrets). `locked.yaml` makes a profile a web-only chat. Applied with comments preserved. |
+| `config/overlay.yaml`, `locked.yaml` | The settings this kit runs with (smart approvals with a written policy and deny list, compression at 200k tokens, queued input, tool lines kept out of chat, loop-guard limits, holographic memory, SearXNG search, local extraction, Camofox browser, sealed secrets). `locked.yaml` makes a profile a web-only chat. Applied with comments preserved. |
 | `soul/sections/` | Generic SOUL sections appended to every profile: character, usage limits, auto mode, failures, visuals, avoiding loops, status questions, reporting results, next steps, memory, long messages, second brain, attention. Plus the i-have-adhd reply format when that skill is installed. |
 | `jobs/` | Generic maintenance jobs: self-check, quota guard, approval notify, gateway heal, backup, issue digest and handler, memory learn and export, update notice, attention check, Kanban feed |
 | `services/` | One systemd template (`agent-worker@<name>`) and run scripts for the gateway, WebUI, dashboard, Workspace, Camofox and Vaultwarden; secrets only via sealed credentials |
@@ -60,6 +60,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent |
 | `camofox-410-apply.py`, `upload-selector-apply.py` | Camofox: recover from dead tabs; reliable file-upload selectors |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence |
+| `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
 | `cron-shared-bot-delivery.patch`, `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Cron delivery with a shared bot; slash-command auth with a late dependency; opt-in team `@here` notifications |
 
@@ -69,7 +70,7 @@ profile can ask the admin profile), `token-usage`, `quota-alert`, `codex-usage-a
 `local-extract`, `vault-guard`.
 
 ### `tools/` and `bin/`
-`attention` (`waiting-on-me`, `follow-up`, `renewals`), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
+`attention` (`waiting-on-me`, `follow-up`, `renewals`, and `pr-resume`: a blocked Kanban card resumes by itself once its PR is approved or merged), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
 `kanban-feed`, `restart-idle`, `consult`, `my-messages`, `quota` (`quota-status`, `automode`), `issues`,
 `gateway-heal`, `speed-tune`, `artifacts` (`publish-artifact`), `token-stats`, `maintenance` (backup, update notice,
 usage report), `doclibs-check`; commands `hermes-sealed-env`, `git-credential-sealed`, `gh` (per-repo token

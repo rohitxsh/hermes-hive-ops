@@ -86,7 +86,7 @@ for name, home in profiles:
     cfg.setdefault("compression", {})["threshold_tokens"] = 200000
     if cfg.get("streaming") is None:
         cfg["streaming"] = {}
-    cfg["streaming"]["enabled"] = True
+    pass  # streaming stays off: with a plugin appending to replies it doubled long Discord replies
     if cfg.get("skills") is None:
         cfg["skills"] = {}
     cfg["skills"]["disabled"] = new_dis
