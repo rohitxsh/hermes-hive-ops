@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Local Hermes patch (2026-11-01, Rohit: queued messages don't get the same reactions): with
+"""Local Hermes patch (2026-11-01: queued messages did not get the same reactions): with
 display.busy_input_mode: queue, a message sent while an agent is busy is stored durably and later run by
 gateway/session_ingress.execute_admission, which calls the handler directly, so the adapter's processing hooks
 (👀 while working, ✅/❌ when done) never fired for it. Part 1 fires them around that call for queued native chat

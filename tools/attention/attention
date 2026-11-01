@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""attention (2026-11-01, Rohit: Duet/dots/Grok-inspired features, no morning briefs). No model calls.
+"""attention (2026-11-01: inspired by always-on assistants; event-only alerts, no morning briefs). No model calls.
 
   attention check            scheduled (Hermes cron, no agent): prints only NEW events, so nothing is posted when
                              nothing happened: renewals due in <=7 days, <=1 day or expired (GitHub tokens and the broker's
