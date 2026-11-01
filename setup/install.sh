@@ -39,6 +39,7 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   link() { run ln -sf "$SRC/$1" "$BIN/$2"; }
   link attention/attention attention; link attention/attention waiting-on-me; link attention/attention follow-up; link attention/attention renewals
   link consult/consult consult; link my-messages/my-messages my-messages; link quota/quota-status quota-status; link quota/automode automode
+  link efficiency/efficiency efficiency; link skill-review/skill-review skill-review
   link restart-idle/hermes-restart-idle hermes-restart-idle; link artifacts/publish-artifact publish-artifact
   link issues/issue-digest.py issues; link token-stats/token-stats token-stats; link token-stats/tool-output-stats tool-output-stats
   for s in memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py kanban-feed/kanban-feed:kanban-feed.py \
@@ -49,7 +50,11 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   done
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention check\n' "$SRC" > "$HH/scripts/attention-check.sh"
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention pr-resume\n' "$SRC" > "$HH/scripts/pr-resume.sh"
-  run chmod 755 "$HH/scripts/attention-check.sh" "$HH/scripts/pr-resume.sh"
+  [ "$DRY" = 1 ] || printf '#!/bin/sh
+exec /usr/bin/python3 %s/skill-review/skill-review
+' "$SRC" > "$HH/scripts/skill-review.sh"
+  run mkdir -p "$HOME/agents/skill-proposals"
+  run chmod 755 "$HH/scripts/attention-check.sh" "$HH/scripts/pr-resume.sh" "$HH/scripts/skill-review.sh"
   if [ "$DRY" = 0 ]; then  # attention settings: watched domains, and whose "approved" PR comments resume a wait
     mkdir -p "$HOME/agents/attention"
     python3 -c "import json,os,sys

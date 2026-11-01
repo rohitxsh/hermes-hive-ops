@@ -13,6 +13,11 @@
 - {name: attention check, schedule: "every 30m", script: attention-check.sh, deliver: admin}
 - {name: pr resume, schedule: "every 5m", script: pr-resume.sh, deliver: local, needs: ~/.hermes/kanban.db}
 - {name: kanban feed, schedule: "*/2 * * * *", script: kanban-feed.py, deliver: local, needs: ~/agents/kanban-feed/config.json}
+- name: skill review
+  schedule: "0 10 * * 0"
+  monitor_script: skill-review.sh
+  deliver: admin
+  prompt_file: skill-review.md
 - name: issue handler
   schedule: "*/10 * * * *"
   monitor_script: issue-pending.sh

@@ -1,0 +1,159 @@
+#!/usr/bin/python3
+"""efficiency: where model quota and time go on this machine, with no model calls (2026-11-01).
+
+  efficiency [--days N] [--profile NAME] [--top N]
+
+Reads every profile's state.db (sessions: tokens, API calls, API-equivalent cost, model) and the Kanban board
+(runs, outcomes). Reports totals, the costliest Kanban cards, scheduled jobs and chat threads, Kanban crash rates
+per profile, skill reload rates, and turns stopped by the loop guard. "Cost" is what the tokens would cost at API
+prices: it shows where subscription quota goes even when nothing is billed. Read-only. `--selftest` checks the maths."""
+import collections
+import datetime as dt
+import glob
+import json
+import os
+import sqlite3
+import sys
+import time
+
+H = os.path.expanduser("~/.hermes")
+CHAT = ("discord", "webui", "telegram", "slack", "whatsapp", "signal", "cli")
+
+
+def arg(name, default):
+    return type(default)(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
+
+
+def ro(path):
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+
+
+def fmt_tok(n):
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e3 else str(int(n))
+
+
+def fmt_min(sec):
+    return f"{sec / 3600:.1f} h" if sec >= 3600 else f"{sec / 60:.0f} min"
+
+
+def profiles(only):
+    out = [("default", H)] + [(os.path.basename(d), d) for d in sorted(glob.glob(f"{H}/profiles/*")) if os.path.isfile(f"{d}/state.db")]
+    return [(n, h) for n, h in out if not only or n == only]
+
+
+def kanban_index():
+    """worker session id -> (task id, title, outcome); and per-profile run outcomes since `since`."""
+    idx, runs = {}, []
+    if not os.path.exists(f"{H}/kanban.db"):
+        return idx, runs
+    c = ro(f"{H}/kanban.db")
+    titles = dict(c.execute("select id, title from tasks"))
+    for tid, prof, start, end, outcome, meta in c.execute("select task_id, profile, started_at, ended_at, outcome, metadata from task_runs"):
+        try:
+            sid = (json.loads(meta or "{}") or {}).get("worker_session_id")
+        except ValueError:
+            sid = None
+        if sid:
+            idx[sid] = (tid, titles.get(tid, ""), outcome)
+        runs.append((prof, start or 0, end, outcome))
+    return idx, runs
+
+
+def collect(days, only):
+    since = time.time() - days * 86400
+    kidx, runs = kanban_index()
+    rows = []  # one per session
+    skills = collections.Counter()
+    reloads = collections.Counter()
+    halts = collections.Counter()
+    for name, home in profiles(only):
+        c = ro(f"{home}/state.db")
+        for sid, src, title, disp, thread, start, end, inp, out, cr, calls, cost, model in c.execute(
+                """select id, source, coalesce(title,''), coalesce(display_name,''), thread_id, started_at, ended_at,
+                   coalesce(input_tokens,0), coalesce(output_tokens,0), coalesce(cache_read_tokens,0),
+                   coalesce(api_call_count,0), coalesce(estimated_cost_usd,0), coalesce(model,'')
+                   from sessions where started_at > ?""", (since,)):
+            ts = [t for t, in c.execute("select timestamp from messages where session_id=? order by timestamp", (sid,))]
+            dur = sum(min(b - a, 300) for a, b in zip([start] + ts, ts))  # active time: gaps over 5 min are idle
+            if sid in kidx:
+                kind, label = "kanban", f"{kidx[sid][0]} {kidx[sid][1][:60]}"
+            elif src == "cron" and not calls:
+                continue  # no-model job runs cost nothing
+            elif src == "cron":
+                kind, label = "cron", title.split(" · ")[0][:70] or "(untitled job)"  # runs of one job share a name
+            elif src in CHAT:
+                kind, label = "chat", (disp or src) + (f" / thread {thread}" if thread else "")
+            else:
+                kind, label = src or "other", title[:70] or src
+            rows.append({"profile": name, "kind": kind, "label": label, "tokens": inp + cr + out, "out": out,
+                         "calls": calls, "cost": cost, "dur": dur, "model": model})
+        seen = collections.Counter()
+        for sid, tc in c.execute("select session_id, tool_calls from messages where timestamp > ? and tool_calls like '%skill_view%'", (since,)):
+            try:
+                for x in json.loads(tc):
+                    f = x.get("function") or {}
+                    if f.get("name") == "skill_view":
+                        s = (json.loads(f.get("arguments") or "{}") or {}).get("name", "?")
+                        skills[s] += 1
+                        seen[(sid, s)] += 1
+                        if seen[(sid, s)] > 1:
+                            reloads[s] += 1
+            except ValueError:
+                pass
+        for prof_halt, in c.execute("select count(*) from messages where timestamp > ? and role='assistant' and content like 'I stopped retrying because I kept running%'", (since,)):
+            halts[name] += prof_halt
+    k = collections.defaultdict(collections.Counter)
+    for prof, start, end, outcome in runs:
+        if start > since and end:
+            k[prof][outcome or "?"] += 1
+    return rows, skills, reloads, halts, k
+
+
+def report(days, only, top):
+    rows, skills, reloads, halts, k = collect(days, only)
+    out = [f"Efficiency, last {days} day(s){' for ' + only if only else ''} (cost = API-equivalent where known; ChatGPT/Codex sessions report tokens only)"]
+    tot = lambda rs, f: sum(r[f] for r in rs)
+    out.append(f"Total: {len(rows)} sessions, {tot(rows, 'calls')} model calls, {fmt_tok(tot(rows, 'tokens'))} tokens, "
+               f"${tot(rows, 'cost'):.2f}, {fmt_min(tot(rows, 'dur'))} of active agent time")
+    by_kind = collections.defaultdict(list)
+    for r in rows:
+        by_kind[r["kind"]].append(r)
+    out.append("By kind: " + ", ".join(f"{kd} ${tot(rs, 'cost'):.2f} {fmt_tok(tot(rs, 'tokens'))} tok ({len(rs)})" for kd, rs in sorted(by_kind.items(), key=lambda kv: (-tot(kv[1], "cost"), -tot(kv[1], "tokens")))))
+    by_prof = collections.defaultdict(list)
+    for r in rows:
+        by_prof[r["profile"]].append(r)
+    out.append("By profile: " + ", ".join(f"{p} ${tot(rs, 'cost'):.2f}/{fmt_tok(tot(rs, 'tokens'))}" for p, rs in sorted(by_prof.items(), key=lambda kv: (-tot(kv[1], "cost"), -tot(kv[1], "tokens")))[:8]))
+    for kind, head in (("kanban", "Costliest Kanban cards"), ("cron", "Costliest scheduled jobs"), ("chat", "Costliest chat channels and threads")):
+        agg = collections.defaultdict(lambda: {"cost": 0.0, "tokens": 0, "calls": 0, "dur": 0.0, "n": 0, "profile": ""})
+        for r in by_kind.get(kind, []):
+            a = agg[r["label"]]
+            a["cost"] += r["cost"]; a["tokens"] += r["tokens"]; a["calls"] += r["calls"]; a["dur"] += r["dur"]; a["n"] += 1; a["profile"] = r["profile"]
+        if agg:
+            out.append(f"{head}:")
+            for label, a in sorted(agg.items(), key=lambda kv: (-kv[1]["cost"], -kv[1]["tokens"]))[:top]:
+                out.append(f"  ${a['cost']:.2f}  {fmt_tok(a['tokens'])} tok  {a['calls']} calls  {fmt_min(a['dur'])} active  {a['n']}x  [{a['profile']}] {label}")
+    bad = {p: c for p, c in k.items() if sum(c.values())}
+    if bad:
+        out.append("Kanban runs by profile (crashed or gave up = wasted work):")
+        for p, c in sorted(bad.items(), key=lambda kv: -(kv[1]["crashed"] + kv[1]["gave_up"]) / max(1, sum(kv[1].values())))[:top]:
+            n = sum(c.values()); waste = c["crashed"] + c["gave_up"] + c["timed_out"]
+            out.append(f"  {p}: {n} runs, {waste} wasted ({waste * 100 // n}%), {dict(c)}")
+    if skills:
+        out.append("Skill loads (reloads in the same session are waste):")
+        for s, n in skills.most_common(top):
+            out.append(f"  {s}: {n} loads, {reloads[s]} reloads ({reloads[s] * 100 // n}%)")
+    if sum(halts.values()):
+        out.append("Turns stopped by the loop guard: " + ", ".join(f"{p} {n}" for p, n in halts.most_common() if n))
+    return "\n".join(out)
+
+
+def selftest():
+    assert fmt_tok(1_500_000) == "1.5M" and fmt_tok(2500) == "2k" and fmt_min(5400) == "1.5 h" and fmt_min(120) == "2 min"
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        print(report(arg("--days", 7), arg("--profile", ""), arg("--top", 5)))

@@ -43,7 +43,7 @@ tells you when an update dropped a patch).
 | `install.sh`, `settings.env.example` | Orchestrates every step below from your settings |
 | `config/overlay.yaml`, `locked.yaml` | The settings this kit runs with (smart approvals with a written policy and deny list, compression at 200k tokens, queued input, tool lines kept out of chat, loop-guard limits, holographic memory, SearXNG search, local extraction, Camofox browser, sealed secrets). `locked.yaml` makes a profile a web-only chat. Applied with comments preserved. |
 | `soul/sections/` | Generic SOUL sections appended to every profile: character, usage limits, auto mode, failures, visuals, avoiding loops, status questions, reporting results, next steps, memory, long messages, second brain, attention. Plus the i-have-adhd reply format when that skill is installed. |
-| `jobs/` | Generic maintenance jobs: self-check, quota guard, approval notify, gateway heal, backup, issue digest and handler, memory learn and export, update notice, attention check, Kanban feed |
+| `jobs/` | Generic maintenance jobs: self-check, quota guard, approval notify, gateway heal, backup, issue digest and handler, memory learn and export, update notice, attention check, PR resume, skill review, Kanban feed |
 | `services/` | One systemd template (`agent-worker@<name>`) and run scripts for the gateway, WebUI, dashboard, Workspace, Camofox and Vaultwarden; secrets only via sealed credentials |
 | `health/agent-health.sh` | Daily self-check: silent when healthy, one line per problem |
 | `brain/setup-brain.py` | `~/brain`, plain-Markdown long-term notes in local git, filed nightly by memory-learn |
@@ -72,7 +72,7 @@ profile can ask the admin profile), `token-usage`, `quota-alert`, `codex-usage-a
 ### `tools/` and `bin/`
 `attention` (`waiting-on-me`, `follow-up`, `renewals`, and `pr-resume`: a blocked Kanban card resumes by itself once its PR is approved or merged), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
 `kanban-feed`, `restart-idle`, `consult`, `my-messages`, `quota` (`quota-status`, `automode`), `issues`,
-`gateway-heal`, `speed-tune`, `artifacts` (`publish-artifact`), `token-stats`, `maintenance` (backup, update notice,
+`gateway-heal`, `speed-tune`, `efficiency` (where quota and time go: per card, job, thread and profile; waste rates; skill reloads), `skill-review` (weekly: an agent proposes one fix to the worst-performing own skill, applied only on your OK), `artifacts` (`publish-artifact`), `token-stats`, `maintenance` (backup, update notice,
 usage report), `doclibs-check`; commands `hermes-sealed-env`, `git-credential-sealed`, `gh` (per-repo token
 wrapper), `report-issue`, `vault-fill`.
 

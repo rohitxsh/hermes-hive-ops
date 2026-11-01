@@ -1,0 +1,115 @@
+#!/usr/bin/python3
+"""skill-review: weekly, no-model scan of OUR OWN skills on this machine (2026-11-01, inspired by OpenJarvis's
+trace-based skill optimisation). Built-in Hermes skills, hub installs and third-party skills are left out.
+
+  skill-review [--days N]     ranked candidates for improvement, plus own skills nobody used
+
+Signals per skill over the last N days (default 14): loads, reloads in the same session (the agent lost it and read
+it again: often too long, or key steps buried), and sessions that used it and then hit the loop guard. The output is
+stable text, so the weekly "skill review" job (a monitor) wakes its agent only when the picture changed. That agent
+writes ONE proposal to ~/agents/skill-proposals/ and never edits a skill itself; the owner applies it. `--selftest`."""
+import collections
+import glob
+import json
+import os
+import sqlite3
+import sys
+import time
+
+H = os.path.expanduser("~")
+HH = f"{H}/.hermes"
+THIRD_PARTY = {"data-visualization", "i-have-adhd", "security-audit", "frontend-design", "designing-open-source-platforms"}
+# vendor skill families copied from coding-agent plugins (Dart/Flutter, Supabase, Cloudflare): not ours to rewrite
+VENDOR_PREFIXES = ("dart-", "flutter-", "supabase", "cloudflare", "workers-", "wrangler", "durable-objects", "agents-sdk", "basin",
+                   "sandbox-", "nextjs-on-cloudflare", "gateway-workers", "turnstile", "web-perf", "k2", "cf-cli")
+VENDOR_PATHS = ("shared-skills-cloudflare", "supabase-agent-skills", "/plugins/")
+EXCLUDE_FILE = f"{H}/agents/skill-review/exclude.txt"   # one skill name or prefix per line, to skip more
+
+
+def excluded(name, path):
+    extra = []
+    if os.path.exists(EXCLUDE_FILE):
+        extra = [l.strip() for l in open(EXCLUDE_FILE) if l.strip() and not l.startswith("#")]
+    return (name in THIRD_PARTY or name.startswith(VENDOR_PREFIXES) or any(v in path for v in VENDOR_PATHS)
+            or any(name == e or (e.endswith("*") and name.startswith(e[:-1])) for e in extra))
+
+
+def own_skills():
+    """name -> SKILL.md paths for skills we wrote (not bundled, not hub, not third-party)."""
+    bundled = {os.path.basename(os.path.dirname(p)) for p in glob.glob(f"{HH}/hermes-agent/skills/**/SKILL.md", recursive=True)}
+    hub = set()
+    for lock in glob.glob(f"{HH}/skills/.hub/lock.json") + glob.glob(f"{HH}/profiles/*/skills/.hub/lock.json"):
+        try:
+            d = json.load(open(lock)); hub |= set((d.get("installed", d) or {}).keys())
+        except (OSError, ValueError):
+            pass
+    out = collections.defaultdict(list)
+    for p in glob.glob(f"{HH}/skills/**/SKILL.md", recursive=True) + glob.glob(f"{HH}/profiles/*/skills/**/SKILL.md", recursive=True) \
+            + glob.glob(f"{H}/agents/shared-skills*/**/SKILL.md", recursive=True):
+        n = os.path.basename(os.path.dirname(p))
+        if n not in bundled and n not in hub and not excluded(n, p) and "/.hub/" not in p:
+            out[n].append(p)
+    return out
+
+
+def scan(days):
+    since = time.time() - days * 86400
+    loads, reloads, sessions, halted = collections.Counter(), collections.Counter(), collections.defaultdict(set), collections.Counter()
+    for db in [f"{HH}/state.db"] + glob.glob(f"{HH}/profiles/*/state.db"):
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+        halts = {s for s, in c.execute("select distinct session_id from messages where timestamp > ? and role='assistant' and content like 'I stopped retrying because I kept running%'", (since,))}
+        seen = collections.Counter()
+        for sid, tc in c.execute("select session_id, tool_calls from messages where timestamp > ? and tool_calls like '%skill_view%'", (since,)):
+            try:
+                calls = json.loads(tc)
+            except ValueError:
+                continue
+            for x in calls:
+                f = x.get("function") or {}
+                if f.get("name") != "skill_view":
+                    continue
+                try:
+                    n = (json.loads(f.get("arguments") or "{}") or {}).get("name", "")
+                except ValueError:
+                    continue
+                n = n.split(":")[-1]
+                loads[n] += 1; seen[(sid, n)] += 1
+                if seen[(sid, n)] > 1:
+                    reloads[n] += 1
+                if sid not in sessions[n]:
+                    sessions[n].add(sid)
+                    halted[n] += sid in halts
+    return loads, reloads, sessions, halted
+
+
+def render(own, loads, reloads, sessions, halted, days):
+    rows = []
+    for n in sorted(own):
+        if loads[n]:
+            rate = reloads[n] / loads[n]
+            score = reloads[n] + 5 * halted[n]
+            rows.append((score, n, loads[n], len(sessions[n]), rate, halted[n]))
+    rows.sort(key=lambda r: (-r[0], r[1]))
+    lines = [f"Own skills, last {days} days (score = reloads + 5 x loop-guard stops):"]
+    for score, n, l, s, rate, h in rows[:8]:
+        if score >= 5:
+            lines.append(f"- {n}: score {score}; {l} loads in {s} sessions, {rate:.0%} reloads, {h} sessions stopped by the loop guard")
+    unused = sorted(n for n in own if not loads[n])
+    if unused:
+        lines.append("Own skills unused in this period: " + ", ".join(unused))
+    return "\n".join(lines) if len(lines) > 1 else "No own skill shows trouble."
+
+
+def selftest():
+    out = render({"a": ["x"], "b": ["y"], "c": ["z"]}, collections.Counter(a=10, b=2), collections.Counter(a=6),
+                 {"a": {1, 2}, "b": {3}}, collections.Counter(a=1), 14)
+    assert "- a: score 11; 10 loads in 2 sessions, 60% reloads, 1 sessions" in out and "- b" not in out and "unused in this period: c" in out, out
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        days = int(sys.argv[sys.argv.index("--days") + 1]) if "--days" in sys.argv else 14
+        print(render(own_skills(), *scan(days), days))
