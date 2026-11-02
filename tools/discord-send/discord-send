@@ -1,0 +1,162 @@
+#!/usr/bin/python3
+"""discord-send (2026-11-02): post a message, with optional file attachments, to a Discord channel or thread from a
+Kanban worker, cron script or any shell that has no Discord token. The bot token stays in the gateway service: this
+queues a one-shot no-model Hermes cron job in the current profile whose output (text plus MEDIA attachments) the
+running gateway delivers with its own bot, then waits for the delivery result. The job always lives in the main
+profile (the only one with Discord configured), and the target must be one this gateway already knows: a channel in
+its channel directory, a thread or channel any profile has talked in, or a thread a Kanban card notifies.
+
+  discord-send --to <channel-or-thread-id> [--file PATH ...] [--message TEXT]   (message from stdin if no --message)
+  discord-send --to ... --no-wait     queue and return without waiting
+  discord-send --selftest
+
+Exit 0 only when the gateway reports the delivery succeeded. Files are copied into ~/agents/delivery/<id>/ first, so a
+worker's scratch folder can disappear afterwards; spool folders older than 14 days are removed."""
+import datetime as dt
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+
+H = os.path.expanduser("~")
+HOME = f"{H}/.hermes"  # main profile: only it has Discord configured; the gateway delivers with its bot
+CALLER = os.path.basename(os.environ.get("HERMES_HOME", "").rstrip("/")) or "default"
+if CALLER == ".hermes":
+    CALLER = "default"
+HERMES = f"{H}/.local/bin/hermes"
+SPOOL = f"{H}/agents/delivery"
+MAX_FILES, MAX_MB = 10, 24
+
+
+def arg_list(name):
+    out, a = [], sys.argv[1:]
+    for i, x in enumerate(a):
+        if x == name and i + 1 < len(a):
+            out.append(a[i + 1])
+    return out
+
+
+def script_text(message_file, files):
+    """The cron script: print the message, then one MEDIA line per attachment."""
+    lines = ["#!/bin/sh", f"cat '{message_file}'", "echo"]
+    lines += [f"echo 'MEDIA:{f}'" for f in files]
+    return "\n".join(lines) + "\n"
+
+
+def job_record(name):
+    try:
+        d = json.load(open(f"{HOME}/cron/jobs.json"))
+    except (OSError, ValueError):
+        return None
+    jobs = d["jobs"] if isinstance(d, dict) else d
+    return next((j for j in jobs if j.get("name") == name), None)
+
+
+def known_targets():
+    """Channel and thread IDs this gateway already knows on Discord (directory, conversations, Kanban notifies)."""
+    import glob, sqlite3
+    ids = set()
+    try:
+        d = json.load(open(f"{HOME}/channel_directory.json"))
+        ids |= {str(e.get("id")) for e in (d.get("platforms") or {}).get("discord") or []}
+    except (OSError, ValueError, AttributeError):
+        pass
+    for db in [f"{HOME}/state.db"] + glob.glob(f"{HOME}/profiles/*/state.db"):
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+            for chat, thread in c.execute("select chat_id, thread_id from sessions where source = 'discord'"):
+                ids |= {str(x) for x in (chat, thread) if x}
+        except sqlite3.Error:
+            pass
+    try:
+        c = sqlite3.connect(f"file:{HOME}/kanban.db?mode=ro", uri=True, timeout=10)
+        for chat, thread in c.execute("select chat_id, thread_id from kanban_notify_subs where platform = 'discord'"):
+            ids |= {str(x) for x in (chat, thread) if x}
+    except sqlite3.Error:
+        pass
+    return ids
+
+
+def cleanup_old():
+    cutoff = time.time() - 14 * 86400
+    for d in os.listdir(SPOOL) if os.path.isdir(SPOOL) else []:
+        p = os.path.join(SPOOL, d)
+        if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def main():
+    to = (arg_list("--to") or [""])[0].strip()
+    if not to.isdigit():
+        sys.exit("discord-send: --to must be a Discord channel or thread ID (digits)")
+    msg = (arg_list("--message") or [None])[0]
+    if msg is None:
+        msg = sys.stdin.read() if not sys.stdin.isatty() else ""
+    files = arg_list("--file")
+    if not msg.strip() and not files:
+        sys.exit("discord-send: nothing to send")
+    if to not in known_targets():
+        sys.exit(f"discord-send: {to} is not a channel or thread this gateway knows (directory, conversations, "
+                 "Kanban notifications); post there once from Discord or ask the admin")
+    if len(files) > MAX_FILES:
+        sys.exit(f"discord-send: at most {MAX_FILES} files")
+    for f in files:
+        if not os.path.isfile(f):
+            sys.exit(f"discord-send: not a file: {f}")
+        if os.path.getsize(f) > MAX_MB * 1024 * 1024:
+            sys.exit(f"discord-send: {f} is over {MAX_MB} MB (Discord's upload limit); send a smaller file or a link")
+    cleanup_old()
+    jid = dt.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    spool = os.path.join(SPOOL, jid)
+    os.makedirs(spool, mode=0o700)
+    copies = []
+    for f in files:
+        dst = os.path.join(spool, os.path.basename(f))
+        shutil.copy2(f, dst)
+        copies.append(dst)
+    mfile = os.path.join(spool, "message.txt")
+    open(mfile, "w", encoding="utf-8").write(msg)
+    os.makedirs(f"{HOME}/scripts", exist_ok=True)
+    script = f"delivery-{jid}.sh"
+    open(f"{HOME}/scripts/{script}", "w").write(script_text(mfile, copies))
+    os.chmod(f"{HOME}/scripts/{script}", 0o755)
+    name = f"delivery {jid} from {CALLER}"
+    when = (dt.datetime.now().astimezone() + dt.timedelta(seconds=45)).isoformat(timespec="seconds")
+    env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HERMES_PROFILE")}
+    r = subprocess.run([HERMES, "cron", "create", when, "--name", name, "--script", script, "--no-agent",
+                        "--deliver", f"discord:{to}", "--failure-deliver", "local"],
+                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, env=env)
+    if r.returncode:
+        sys.exit(f"discord-send: could not queue the delivery: {(r.stderr or r.stdout).strip()[-300:]}")
+    if "--no-wait" in sys.argv:
+        print(json.dumps({"queued": True, "job": name, "to": to, "files": len(copies)}))
+        return
+    deadline = time.time() + 240
+    while time.time() < deadline:
+        time.sleep(10)
+        j = job_record(name)
+        if j and j.get("last_run_at"):
+            ok = j.get("last_status") in ("ok", "success") and not j.get("last_delivery_error")
+            out = {"delivered": ok, "to": to, "files": len(copies), "job": name,
+                   "status": j.get("last_status"), "error": (j.get("last_delivery_error") or j.get("last_error") or "")[:300]}
+            print(json.dumps(out))
+            subprocess.run([HERMES, "cron", "remove", j["id"]], capture_output=True, timeout=60,
+                           stdin=subprocess.DEVNULL, env=env)  # one-shot: keep the job list clean
+            if ok:
+                os.remove(f"{HOME}/scripts/{script}")
+            sys.exit(0 if ok else 1)
+    print(json.dumps({"delivered": None, "to": to, "job": name, "error": "no result within 4 minutes; check `hermes cron list`"}))
+    sys.exit(2)
+
+
+def selftest():
+    t = script_text("/x/message.txt", ["/x/a.md", "/x/b.png"])
+    assert t.splitlines() == ["#!/bin/sh", "cat '/x/message.txt'", "echo", "echo 'MEDIA:/x/a.md'", "echo 'MEDIA:/x/b.png'"], t
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    selftest() if "--selftest" in sys.argv else main()
