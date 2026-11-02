@@ -1,0 +1,137 @@
+#!/usr/bin/python3
+"""board-sync (2026-11-02): keep a GitHub Projects (v2) board's Status in step with PR and issue state, no model calls.
+
+  board-sync [--dry-run]     one pass; prints only what it changed (silent when nothing did)
+  board-sync --selftest
+
+Config ~/agents/board-sync/config.json: {"owner": "ORG", "project": 2, "repo": "ORG/REPO"}. Uses the gh wrapper (the
+sealed machine-user token). Rules, in order, for items on the board:
+  PR merged -> Done; PR closed without merging -> archived from the board (restorable);
+  open PR by label: changes-requested -> In Progress, human-signoff -> Awaiting Human Approval,
+  qa-passed -> In Review, qa -> QA Review, none -> In Progress;
+  issue closed -> Done; open issue closed by an open PR (Closes #N) -> that PR's lane.
+Only items whose Status is one of the automatic lanes (or empty) are moved: Blocked, Paused, Deferred,
+Needs Clarification and CI are set on purpose by people or agents and are never overridden."""
+import json
+import os
+import subprocess
+import sys
+
+H = os.path.expanduser("~")
+GH = f"{H}/.local/bin/gh"
+CFG = f"{H}/agents/board-sync/config.json"
+AUTO = {"", "Backlog", "Ready", "In Progress", "In Review", "QA Review", "Awaiting Human Approval", "Done"}
+
+QUERY = """query($owner:String!,$num:Int!,$after:String){organization(login:$owner){projectV2(number:$num){id
+ field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name}}}
+ items(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isArchived
+  fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+  content{__typename
+   ... on PullRequest{number state merged labels(first:30){nodes{name}} closingIssuesReferences(first:10){nodes{number}}}
+   ... on Issue{number state}}}}}}}"""
+
+
+def pr_lane(pr):
+    """Board lane for a PR from its state and labels; "ARCHIVE" for closed-unmerged."""
+    if pr.get("merged"):
+        return "Done"
+    if pr.get("state") == "CLOSED":
+        return "ARCHIVE"
+    labels = {l["name"] for l in (pr.get("labels") or {}).get("nodes", [])}
+    for label, lane in (("changes-requested", "In Progress"), ("human-signoff", "Awaiting Human Approval"),
+                        ("qa-passed", "In Review"), ("qa", "QA Review")):
+        if label in labels:
+            return lane
+    return "In Progress"
+
+
+def plan(items):
+    """[(item_id, current, target)] for items that should move. Pure: unit-tested."""
+    issue_lane = {}
+    for it in items:
+        c = it.get("content") or {}
+        if c.get("__typename") == "PullRequest" and c.get("state") == "OPEN":
+            for ref in (c.get("closingIssuesReferences") or {}).get("nodes", []):
+                issue_lane[ref["number"]] = pr_lane(c)
+    out = []
+    for it in items:
+        if it.get("isArchived"):
+            continue
+        c = it.get("content") or {}
+        cur = (it.get("fieldValueByName") or {}).get("name") or ""
+        kind = c.get("__typename")
+        if kind == "PullRequest":
+            target = pr_lane(c)
+        elif kind == "Issue":
+            target = "Done" if c.get("state") == "CLOSED" else issue_lane.get(c.get("number"))
+        else:
+            target = None
+        if target and target != cur and (cur in AUTO or target == "Done" and kind == "Issue"):
+            out.append((it["id"], cur, target, f"{'PR' if kind == 'PullRequest' else 'issue'} #{c.get('number')}"))
+    return out
+
+
+def gh(*args, inp=None):
+    r = subprocess.run([GH, *args], capture_output=True, text=True, input=inp, timeout=120)
+    if r.returncode:
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:200]}")
+    return r.stdout
+
+
+def fetch(owner, num):
+    items, after, proj = [], None, None
+    while True:
+        args = ["api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"num={num}"]
+        if after:
+            args += ["-f", f"after={after}"]
+        p = json.loads(gh(*args))["data"]["organization"]["projectV2"]
+        proj = proj or p
+        items += p["items"]["nodes"]
+        if not p["items"]["pageInfo"]["hasNextPage"]:
+            return proj, items
+        after = p["items"]["pageInfo"]["endCursor"]
+
+
+def main(dry):
+    cfg = json.load(open(CFG))
+    proj, items = fetch(cfg["owner"], int(cfg["project"]))
+    opts = {o["name"]: o["id"] for o in proj["field"]["options"]}
+    for item_id, cur, target, label in plan(items):
+        if dry:
+            print(f"would move {label}: {cur or '(none)'} -> {target}")
+            continue
+        if target == "ARCHIVE":
+            gh("project", "item-archive", str(cfg["project"]), "--owner", cfg["owner"], "--id", item_id)
+            print(f"archived {label} (closed without merging; was {cur or 'no status'})")
+        elif target in opts:
+            gh("project", "item-edit", "--project-id", proj["id"], "--id", item_id,
+               "--field-id", proj["field"]["id"], "--single-select-option-id", opts[target])
+            print(f"moved {label}: {cur or '(none)'} -> {target}")
+
+
+def selftest():
+    pr = lambda n, st="OPEN", merged=False, labels=(), closes=(): {"__typename": "PullRequest", "number": n, "state": st,
+        "merged": merged, "labels": {"nodes": [{"name": l} for l in labels]},
+        "closingIssuesReferences": {"nodes": [{"number": c} for c in closes]}}
+    item = lambda i, content, status="": {"id": i, "isArchived": False, "content": content,
+        "fieldValueByName": {"name": status} if status else None}
+    items = [item("a", pr(33, labels=("qa", "human-signoff", "risk:high"), closes=(34,)), "Backlog"),
+             item("b", pr(29, st="CLOSED"), "Backlog"),
+             item("c", pr(27, st="MERGED", merged=True), "Done"),
+             item("d", {"__typename": "Issue", "number": 34, "state": "OPEN"}, "Backlog"),
+             item("e", pr(40, labels=("qa",)), "Blocked"),
+             item("f", {"__typename": "Issue", "number": 3, "state": "OPEN"}, "Blocked"),
+             item("g", pr(41, labels=("qa", "changes-requested")), "QA Review"),
+             item("h", {"__typename": "Issue", "number": 9, "state": "CLOSED"}, "Blocked")]
+    got = {i: (cur, t) for i, cur, t, _ in plan(items)}
+    assert got == {"a": ("Backlog", "Awaiting Human Approval"), "b": ("Backlog", "ARCHIVE"),
+                   "d": ("Backlog", "Awaiting Human Approval"), "g": ("QA Review", "In Progress"),
+                   "h": ("Blocked", "Done")}, got
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        main("--dry-run" in sys.argv)
