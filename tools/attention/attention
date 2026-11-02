@@ -153,12 +153,13 @@ def kanban_waiting():
     if not os.path.exists(db):
         return []
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
-    rows = c.execute("""select t.id, t.assignee, t.title, coalesce(t.block_kind, 'needs_input'),
-        (select max(created_at) from task_events e where e.task_id = t.id and e.kind = 'blocked'),
-        (select payload from task_events e where e.task_id = t.id and e.kind = 'blocked' order by created_at desc limit 1)
-        from tasks t where t.status = 'blocked'""").fetchall()
+    rows = c.execute(f"""select t.id, t.assignee, t.title, coalesce(t.block_kind, 'needs_input'),
+        (select max(created_at) from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected')),
+        (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected')
+         order by created_at desc limit 1), t.status
+        from tasks t where t.status = 'blocked' or (t.status = 'triage' and {LOOP_HELD_SQL})""").fetchall()
     out = []
-    for tid, who, title, kind, since, payload in rows:
+    for tid, who, title, kind, since, payload, status in rows:
         if kind in ("dependency", "transient"):
             continue
         reason = ""
@@ -168,8 +169,33 @@ def kanban_waiting():
             pass
         if reason in ("initial_status", "blocked"):  # placeholder reasons Hermes records at creation
             reason = ""
-        out.append({"id": tid, "who": who, "title": title, "since": since, "reason": reason})
+        out.append({"id": tid, "who": who, "title": title, "since": since, "reason": reason, "status": status})
     return out
+
+
+# A card Hermes moved to triage after repeated blocks of one kind (limit 2) still waits on a person; the loop-hold
+# patch keeps it there until its owner routes it. Same test as that patch: the latest routing event is the loop.
+LOOP_HELD_SQL = """(select e.kind from task_events e where e.task_id = t.id and e.kind in
+    ('block_loop_detected', 'promoted', 'specified', 'decomposed', 'created') order by e.created_at desc, e.id desc limit 1)
+    = 'block_loop_detected'"""
+
+
+def resume_card(t, reason):
+    """Unblock a blocked card; release a loop-held triage card to its assignee as written (reason as a comment)."""
+    hermes = f"{H}/.local/bin/hermes"
+    if t.get("status") != "triage":
+        return run([hermes, "kanban", "unblock", t["id"], "--reason", reason])
+    rc, out = run([hermes, "kanban", "comment", t["id"], reason])
+    if rc:
+        return rc, out
+    try:
+        f = sorted(glob.glob(f"{H}/.hermes/installs/*/facts.json"), key=os.path.getmtime)[-1]
+        py = json.load(open(f))["packages"]["venv"]["environment"] + "/bin/python"
+    except (IndexError, OSError, ValueError, KeyError):
+        return 1, "no Hermes venv"
+    code = ("import sys; from hermes_cli import kanban_db as kb, kanban_db_connect as kbc\n"
+            "with kbc.connect_closing() as c: sys.exit(0 if kb.specify_triage_task(c, sys.argv[1]) else 1)")
+    return run([py, "-I", "-c", code, t["id"]])
 
 
 def approvals_waiting():
@@ -292,7 +318,10 @@ def pr_approved(slug, num, since, owner):
 
 def pr_verdict(d, since, owner, agents=()):
     """(True, why) approved/merged; ("changes", why) a reviewer asked for changes or a person commented after the
-    card was blocked; (False, "waiting") otherwise. agents: the agents' own GitHub logins (their comments don't count)."""
+    card was blocked; (None, "closed unmerged") for a PR closed without merging (superseded: ignored); (False, "waiting")
+    otherwise. agents: the agents' own GitHub logins (their comments don't count)."""
+    if d.get("state") == "CLOSED" and not d.get("mergedAt"):
+        return None, "closed unmerged"
     if d.get("state") == "MERGED":
         return True, "merged"
     if d.get("reviewDecision") == "APPROVED":
@@ -336,20 +365,21 @@ def pr_resume():
         if not prs:
             continue
         results = [(slug, num, *pr_approved(slug, num, t["since"], owner)) for slug, num in prs]
+        results = [r for r in results if r[2] is not None]  # superseded PRs don't count
+        if not results:
+            continue
         fb = [(slug, num, w) for slug, num, ok, w in results if ok == "changes"]
         if fb:
             why = "; ".join(f"{slug}#{num} {w}" for slug, num, w in fb)
-            rc, out = run([f"{H}/.local/bin/hermes", "kanban", "unblock", t["id"], "--reason",
-                           f"Review feedback: {why}. Read the PR review and comments, address them on this card, "
-                           f"then block it again with the PR URL to wait for approval."])
+            rc, out = resume_card(t, f"Review feedback: {why}. Read the PR review and comments, address them on this "
+                                     f"card, then block it again with the PR URL to wait for approval.")
             if rc == 0:
                 done[t["id"]] = t["since"]
                 print(f"💬 {t['id']} ({t['who']}) resumed for review feedback: {why}")
             continue
         if all(ok is True for *_, ok, _ in results):
             why = "; ".join(f"{slug}#{num} {w}" for slug, num, _, w in results)
-            rc, out = run([f"{H}/.local/bin/hermes", "kanban", "unblock", t["id"], "--reason",
-                           f"Resumed automatically: {why}. Carry on with the approved work."])
+            rc, out = resume_card(t, f"Resumed automatically: {why}. Carry on with the approved work.")
             if rc == 0:
                 done[t["id"]] = t["since"]
                 print(f"🔓 {t['id']} ({t['who']}) resumed: {why}")
@@ -460,6 +490,8 @@ def selftest():
     since = dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc).timestamp()
     rv = lambda who, st, when="2026-11-02T10:00:00Z", body="": {"author": {"login": who}, "state": st, "submittedAt": when, "body": body}
     assert pr_verdict({"reviewDecision": "APPROVED"}, since, "") == (True, "approved in review")
+    assert pr_verdict({"state": "CLOSED", "mergedAt": None}, since, "") == (None, "closed unmerged")
+    assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-02T10:00:00Z"}, since, "")[0] is True
     assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED")]}, since, "")[0] == "changes"
     assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED", "2026-11-01T10:00:00Z")]}, since, "") == (False, "waiting")
     assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "rename this"}]}, since, "", ["example-owner"])[0] == "changes"
