@@ -39,7 +39,7 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   link() { run ln -sf "$SRC/$1" "$BIN/$2"; }
   link attention/attention attention; link attention/attention waiting-on-me; link attention/attention follow-up; link attention/attention renewals
   link consult/consult consult; link my-messages/my-messages my-messages; link quota/quota-status quota-status; link quota/automode automode
-  link efficiency/efficiency efficiency; link skill-review/skill-review skill-review; link discord-send/discord-send discord-send
+  link efficiency/efficiency efficiency; link skill-review/skill-review skill-review; link discord-send/discord-send discord-send; link md-pdf/md-pdf md-pdf
   link restart-idle/hermes-restart-idle hermes-restart-idle; link artifacts/publish-artifact publish-artifact
   link issues/issue-digest.py issues; link token-stats/token-stats token-stats; link token-stats/tool-output-stats tool-output-stats
   for s in memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py kanban-feed/kanban-feed:kanban-feed.py \

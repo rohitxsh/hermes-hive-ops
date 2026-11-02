@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""md-pdf (2026-11-02): render a Markdown file as a readable PDF (headings, tables, code, lists, local images), so
+people can read agents' reports on any device. Prints the PDF path.
+
+  md-pdf FILE.md [-o OUT.pdf]      default output: FILE.pdf next to the input
+  md-pdf --selftest
+
+Uses Hermes's own Python packages (markdown-it) and its bundled headless Chromium. Raw HTML in the Markdown is shown as
+text, not rendered (and javascript: links are dropped), so the page Chromium prints contains no script. Chromium
+hangs on its first run with a fresh profile, so md-pdf keeps one warmed profile in ~/.cache/md-pdf and serializes runs
+with a lock."""
+import glob
+import html
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import fcntl
+
+H = os.path.expanduser("~")
+CSS = """
+@page { size: A4; margin: 16mm 14mm; }
+body { font: 10.5pt/1.5 -apple-system, "Segoe UI", "Noto Sans", "DejaVu Sans", Arial, sans-serif; color: #1f2328; }
+h1, h2, h3, h4 { line-height: 1.25; margin: 1.2em 0 .5em; }
+h1 { font-size: 1.8em; border-bottom: 1px solid #d0d7de; padding-bottom: .25em; }
+h2 { font-size: 1.4em; border-bottom: 1px solid #d0d7de; padding-bottom: .2em; }
+h3 { font-size: 1.15em; }
+p, ul, ol, table, pre, blockquote { margin: 0 0 .8em; }
+code { font: 9pt "DejaVu Sans Mono", Consolas, monospace; background: #f6f8fa; padding: .1em .3em; border-radius: 4px; }
+pre { background: #f6f8fa; padding: .8em; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; font-size: .95em; }
+th, td { border: 1px solid #d0d7de; padding: .35em .6em; vertical-align: top; text-align: left; }
+th { background: #f6f8fa; }
+tr { page-break-inside: avoid; }
+blockquote { color: #59636e; border-left: 4px solid #d0d7de; padding: 0 1em; margin-left: 0; }
+img { max-width: 100%; }
+a { color: #0969da; text-decoration: none; }
+hr { border: 0; border-top: 1px solid #d0d7de; }
+"""
+
+
+def venv_python():
+    f = sorted(glob.glob(f"{H}/.hermes/installs/*/facts.json"), key=os.path.getmtime)[-1]
+    return json.load(open(f))["packages"]["venv"]["environment"] + "/bin/python"
+
+
+def chrome():
+    found = sorted(glob.glob(f"{H}/.hermes/tools/chromium-*/chrome-linux64/chrome"))
+    if not found:
+        sys.exit("md-pdf: Hermes's Chromium is missing (~/.hermes/tools/chromium-*); install a browser with `hermes` first")
+    return found[-1]
+
+
+def to_html(text, title, base_dir):
+    from markdown_it import MarkdownIt
+    md = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False}).enable(["table", "strikethrough"])
+    body = md.render(text)
+    return (f"<!doctype html><html><head><meta charset='utf-8'><base href='file://{html.escape(base_dir)}/'>"
+            f"<title>{html.escape(title)}</title><style>{CSS}</style></head><body>{body}</body></html>")
+
+
+CACHE = f"{H}/.cache/md-pdf"
+FLAGS = ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
+         "--no-default-browser-check", "--disable-extensions", "--disable-background-networking", "--disable-sync",
+         "--disable-component-update", "--disable-features=GCMChannelStatusRequest,PushMessaging,MediaRouter",
+         "--no-pdf-header-footer"]
+
+
+def run_chrome(args, log, timeout):
+    """Run Chromium in its own process group, output to a log file (its helpers keep inherited pipes open), and kill
+    the whole group afterwards so no helper keeps the profile locked. True if it exited in time."""
+    import signal
+    for f in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(f"{CACHE}/profile/{f}")
+        except OSError:
+            pass
+    with open(log, "w") as fh:
+        proc = subprocess.Popen([chrome(), *FLAGS, f"--user-data-dir={CACHE}/profile", *args], stdout=fh,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+
+
+def render(src, out):
+    text = open(src, encoding="utf-8", errors="replace").read()
+    page = to_html(text, os.path.basename(src), os.path.dirname(os.path.abspath(src)))
+    os.makedirs(CACHE, mode=0o700, exist_ok=True)
+    with open(f"{CACHE}/lock", "w") as lock, tempfile.TemporaryDirectory() as tmp:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one Chromium at a time on the shared profile
+        if not os.path.exists(f"{CACHE}/profile/.warm"):
+            run_chrome(["--dump-dom", "about:blank"], f"{tmp}/warm.log", 30)  # the first run may hang: it just sets the profile up
+            os.makedirs(f"{CACHE}/profile", exist_ok=True)
+            open(f"{CACHE}/profile/.warm", "w").close()
+        hp = os.path.join(tmp, "page.html")
+        open(hp, "w", encoding="utf-8").write(page)
+        done = run_chrome([f"--print-to-pdf={os.path.abspath(out)}", f"file://{hp}"], f"{tmp}/chrome.log", 90)
+        err = open(f"{tmp}/chrome.log", errors="replace").read().strip()[-300:]
+    if not (os.path.isfile(out) and open(out, "rb").read(5) == b"%PDF-"):
+        sys.exit(f"md-pdf: Chromium did not produce a PDF{'' if done else ' (timed out after 90 s)'}: {err}")
+    return out
+
+
+def selftest():
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "t.md")
+        open(src, "w").write("# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n<script>alert(1)</script>\n\n```\ncode\n```\n")
+        page = to_html(open(src).read(), "t.md", tmp)
+        assert "<table>" in page and "&lt;script&gt;" in page and "<script>" not in page.split("</style>", 1)[1], page
+        out = render(src, os.path.join(tmp, "t.pdf"))
+        assert os.path.getsize(out) > 1000
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    try:
+        import markdown_it  # noqa: F401  (Hermes's venv has it; /usr/bin/python3 usually doesn't)
+    except ImportError:
+        os.execv(venv_python(), [venv_python(), os.path.abspath(__file__), *sys.argv[1:]])
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        args = [a for a in sys.argv[1:]]
+        if not args or args[0].startswith("-"):
+            sys.exit(__doc__)
+        src = args[0]
+        out = args[args.index("-o") + 1] if "-o" in args else os.path.splitext(src)[0] + ".pdf"
+        print(render(src, out))

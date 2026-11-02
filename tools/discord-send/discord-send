@@ -10,6 +10,8 @@ its channel directory, a thread or channel any profile has talked in, or a threa
   discord-send --to ... --no-wait     queue and return without waiting
   discord-send --selftest
 
+Every Markdown attachment (.md) also gets a formatted PDF copy (md-pdf) right after it, so people can read it on any
+device; if rendering fails the .md still goes out and the message says so.
 Exit 0 only when the gateway reports the delivery succeeded. Files are copied into ~/agents/delivery/<id>/ first, so a
 worker's scratch folder can disappear afterwards; spool folders older than 14 days are removed."""
 import datetime as dt
@@ -117,6 +119,20 @@ def main():
         dst = os.path.join(spool, os.path.basename(f))
         shutil.copy2(f, dst)
         copies.append(dst)
+    with_pdf, pdf_failed = [], []
+    for c in copies:
+        with_pdf.append(c)
+        if c.lower().endswith((".md", ".markdown")) and len(with_pdf) < MAX_FILES:
+            r = subprocess.run([f"{H}/.local/bin/md-pdf", c], capture_output=True, text=True, timeout=150,
+                               stdin=subprocess.DEVNULL)
+            pdf = os.path.splitext(c)[0] + ".pdf"
+            if r.returncode == 0 and os.path.isfile(pdf):
+                with_pdf.append(pdf)
+            else:
+                pdf_failed.append(os.path.basename(c))
+    copies = with_pdf
+    if pdf_failed:
+        msg = msg.rstrip() + f"\n\n(PDF copy could not be made for: {', '.join(pdf_failed)})"
     mfile = os.path.join(spool, "message.txt")
     open(mfile, "w", encoding="utf-8").write(msg)
     os.makedirs(f"{HOME}/scripts", exist_ok=True)
