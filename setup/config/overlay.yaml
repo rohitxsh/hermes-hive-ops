@@ -71,3 +71,5 @@ secrets:
   command:
     enabled: true
     command: ~/.local/bin/hermes-sealed-env   # sealed credentials into each profile's environment
+cron:
+  wrap_response: false            # scheduled-job posts show just the message, no "Cronjob Response" header or footer
