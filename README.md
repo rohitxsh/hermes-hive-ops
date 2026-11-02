@@ -84,6 +84,13 @@ wrapper), `report-issue`, `vault-fill`.
 `claude-code-tickets` (coding work through Claude Code, Codex as fallback), `consult-assistant`, `vault-logins`,
 `markitdown`, `interactive-visuals`.
 
+Adapted from Google's [elephant-goldfish-model](https://github.com/google/elephant-goldfish-model) (Apache-2.0, license
+in each folder): `goldfish-review` (fresh read-only subagents review a contract or PRD before work starts:
+comprehension paraphrase, design critic, implementation readiness; 🔴/🟡/🟢 findings answered with propose fix /
+contest / escalate / decline; one re-audit at most), `drift-report` (design docs vs code on the default branch, in a
+temporary worktree; schedule it weekly as a monitor-gated job whose script prints `origin/main` and a digest of the
+design docs) and `docs-bootstrap` (contract-style READMEs for code that has no design docs).
+
 ## Third-party pieces (installed by `setup/third-party/install.sh`, not copied here)
 
 [obra/superpowers](https://github.com/obra/superpowers) @ 2ce8aa15 (its session-start injection is turned off by
