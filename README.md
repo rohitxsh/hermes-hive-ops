@@ -65,6 +65,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones |
 | `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written |
 | `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files mid-backup; any other missing file still fails it |
+| `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
 | `cron-shared-bot-delivery.patch`, `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Cron delivery with a shared bot; slash-command auth with a late dependency; opt-in team `@here` notifications |
 
