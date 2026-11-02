@@ -76,7 +76,7 @@ profile can ask the admin profile), `token-usage`, `quota-alert`, `codex-usage-a
 ### `tools/` and `bin/`
 `attention` (`waiting-on-me`, `follow-up`, `renewals`, and `pr-resume`: a blocked Kanban card resumes by itself once its PR is approved or merged, or with a review-feedback note when a reviewer requests changes; list the agents' own GitHub logins in `~/agents/attention/config.json` `agent_github_logins` to also wake on human comments), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
 `kanban-feed`, `restart-idle`, `consult`, `my-messages`, `quota` (`quota-status`, `automode`), `issues`,
-`gateway-heal`, `speed-tune`, `efficiency` (where quota and time go: per card, job, thread and profile; waste rates; skill reloads), `skill-review` (weekly: an agent proposes one fix to the worst-performing own skill, applied only on your OK), `artifacts` (`publish-artifact`), `token-stats`, `maintenance` (backup, update notice,
+`gateway-heal`, `speed-tune`, `efficiency` (where quota and time go: per card, job, thread and profile; waste rates; skill reloads), `skill-review` (weekly: an agent proposes one fix to the worst-performing own skill, applied only on your OK), `board-sync` (keeps a GitHub Projects board's lanes in step with PR/issue state and labels; enable it by writing `~/agents/board-sync/config.json` with `owner`, `project` and `repo`), `artifacts` (`publish-artifact`), `token-stats`, `maintenance` (backup, update notice,
 usage report), `doclibs-check`; commands `hermes-sealed-env`, `git-credential-sealed`, `gh` (per-repo token
 wrapper), `report-issue`, `vault-fill`.
 
