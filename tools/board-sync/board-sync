@@ -5,13 +5,15 @@
   board-sync --selftest
 
 Config ~/agents/board-sync/config.json: {"owner": "ORG", "project": 2, "repo": "ORG/REPO"}. Uses the gh wrapper (the
-sealed machine-user token). Rules, in order, for items on the board:
-  PR merged -> Done; PR closed without merging -> archived from the board (restorable);
-  open PR by label: changes-requested -> In Progress, human-signoff -> Awaiting Human Approval,
-  qa-passed -> In Review, qa -> QA Review, none -> In Progress;
-  issue closed -> Done; open issue closed by an open PR (Closes #N) -> that PR's lane.
-Only items whose Status is one of the automatic lanes (or empty) are moved: Blocked, Paused, Deferred,
-Needs Clarification and CI are set on purpose by people or agents and are never overridden."""
+sealed machine-user token). Lanes follow the progression Backlog -> Ready -> In Progress -> In Review -> CI -> QA Review
+-> Awaiting Human Approval (high-risk only) -> Done, where Done means merged and closing something never implies Done:
+  PR merged -> Done; PR closed without merging -> archived from the board (restorable; obsolete work is not delivered);
+  open PR by label: changes-requested -> In Progress; qa-passed with human-signoff -> Awaiting Human Approval;
+  qa-passed or qa -> QA Review (human-signoff alone, before QA passes, stays in QA Review); otherwise In Review;
+  an issue that an open PR closes (Closes #N) follows that PR's lane; an issue closed by a merged PR -> Done;
+  other closed issues are left alone.
+Only items in an automatic lane (Backlog, Ready, In Progress, In Review, QA Review, Awaiting Human Approval, or none)
+move; Blocked, Paused, Deferred, Needs Clarification, CI and Done are set on purpose and never overridden."""
 import json
 import os
 import subprocess
@@ -20,7 +22,7 @@ import sys
 H = os.path.expanduser("~")
 GH = f"{H}/.local/bin/gh"
 CFG = f"{H}/agents/board-sync/config.json"
-AUTO = {"", "Backlog", "Ready", "In Progress", "In Review", "QA Review", "Awaiting Human Approval", "Done"}
+AUTO = {"", "Backlog", "Ready", "In Progress", "In Review", "QA Review", "Awaiting Human Approval"}
 
 QUERY = """query($owner:String!,$num:Int!,$after:String){organization(login:$owner){projectV2(number:$num){id
  field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name}}}
@@ -38,11 +40,13 @@ def pr_lane(pr):
     if pr.get("state") == "CLOSED":
         return "ARCHIVE"
     labels = {l["name"] for l in (pr.get("labels") or {}).get("nodes", [])}
-    for label, lane in (("changes-requested", "In Progress"), ("human-signoff", "Awaiting Human Approval"),
-                        ("qa-passed", "In Review"), ("qa", "QA Review")):
-        if label in labels:
-            return lane
-    return "In Progress"
+    if "changes-requested" in labels:
+        return "In Progress"
+    if "qa-passed" in labels and "human-signoff" in labels:
+        return "Awaiting Human Approval"
+    if labels & {"qa", "qa-passed"}:
+        return "QA Review"
+    return "In Review"
 
 
 def plan(items):
@@ -50,7 +54,7 @@ def plan(items):
     issue_lane = {}
     for it in items:
         c = it.get("content") or {}
-        if c.get("__typename") == "PullRequest" and c.get("state") == "OPEN":
+        if c.get("__typename") == "PullRequest" and (c.get("state") == "OPEN" or c.get("merged")):
             for ref in (c.get("closingIssuesReferences") or {}).get("nodes", []):
                 issue_lane[ref["number"]] = pr_lane(c)
     out = []
@@ -63,10 +67,12 @@ def plan(items):
         if kind == "PullRequest":
             target = pr_lane(c)
         elif kind == "Issue":
-            target = "Done" if c.get("state") == "CLOSED" else issue_lane.get(c.get("number"))
+            target = issue_lane.get(c.get("number"))
+            if c.get("state") == "CLOSED" and target != "Done":
+                target = None  # closed without a merged PR: never implies Done
         else:
             target = None
-        if target and target != cur and (cur in AUTO or target == "Done" and kind == "Issue"):
+        if target and target != cur and cur in AUTO:
             out.append((it["id"], cur, target, f"{'PR' if kind == 'PullRequest' else 'issue'} #{c.get('number')}"))
     return out
 
@@ -115,18 +121,22 @@ def selftest():
         "closingIssuesReferences": {"nodes": [{"number": c} for c in closes]}}
     item = lambda i, content, status="": {"id": i, "isArchived": False, "content": content,
         "fieldValueByName": {"name": status} if status else None}
-    items = [item("a", pr(33, labels=("qa", "human-signoff", "risk:high"), closes=(34,)), "Backlog"),
+    items = [item("a", pr(33, labels=("qa", "human-signoff", "risk:high"), closes=(34,)), "Awaiting Human Approval"),
              item("b", pr(29, st="CLOSED"), "Backlog"),
-             item("c", pr(27, st="MERGED", merged=True), "Done"),
+             item("c", pr(27, st="MERGED", merged=True, closes=(26,)), "Done"),
              item("d", {"__typename": "Issue", "number": 34, "state": "OPEN"}, "Backlog"),
              item("e", pr(40, labels=("qa",)), "Blocked"),
              item("f", {"__typename": "Issue", "number": 3, "state": "OPEN"}, "Blocked"),
              item("g", pr(41, labels=("qa", "changes-requested")), "QA Review"),
-             item("h", {"__typename": "Issue", "number": 9, "state": "CLOSED"}, "Blocked")]
+             item("h", {"__typename": "Issue", "number": 9, "state": "CLOSED"}, "Ready"),
+             item("i", {"__typename": "Issue", "number": 26, "state": "CLOSED"}, "In Review"),
+             item("j", pr(42, labels=("qa-passed", "human-signoff")), "QA Review"),
+             item("k", pr(43), "")]
     got = {i: (cur, t) for i, cur, t, _ in plan(items)}
-    assert got == {"a": ("Backlog", "Awaiting Human Approval"), "b": ("Backlog", "ARCHIVE"),
-                   "d": ("Backlog", "Awaiting Human Approval"), "g": ("QA Review", "In Progress"),
-                   "h": ("Blocked", "Done")}, got
+    assert got == {"a": ("Awaiting Human Approval", "QA Review"), "b": ("Backlog", "ARCHIVE"),
+                   "d": ("Backlog", "QA Review"), "g": ("QA Review", "In Progress"),
+                   "i": ("In Review", "Done"), "j": ("QA Review", "Awaiting Human Approval"),
+                   "k": ("", "In Review")}, got
     print("selftest ok")
 
 
