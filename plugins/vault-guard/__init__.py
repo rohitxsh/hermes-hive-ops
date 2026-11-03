@@ -47,29 +47,32 @@ def _bitwarden():
     return next((b for b in enabled_backends() if b.name == "bitwarden"), None)
 
 
+IDLE_TTL_S = 30 * 60  # Hermes's own unlock idle expiry (agent.vault_backends.unlock)
+REVOKERS = ("lock", "release_session", "lock_all_profiles")  # Hermes's public revocation functions
 _shared: dict = {}  # the last Bitwarden session any profile in this process used: {"token", "at"}
 _shared_lock = threading.Lock()  # revocations clear _shared under it; a share commits only under it
+_BUILTIN: dict = {}  # Hermes's own browser_vault handler and check_fn, from the public tool registry
 
 
 def _revocation_hook() -> bool:
     """Drop the shared copy whenever Hermes forgets a token anywhere (session close, lock, shutdown).
 
-    Hermes's module functions call these ops through ``unlock._tokens`` at call time, so wrapping them there covers
-    every caller. False (sharing off) when the store no longer looks like this."""
+    Wraps Hermes's public revocation functions; every Hermes caller looks them up on the module at call time.
+    Another copy of this plugin (one per profile) may wrap them again, so each copy clears its own _shared.
+    False (sharing off) when one of them is missing."""
     try:
         from agent.vault_backends import unlock as u
-        ops = u._tokens
-        names = ("lock_profile", "release", "lock_everything")
-        if not all(callable(getattr(ops, n, None)) for n in names) or not hasattr(ops, "_replace"):
+        if not all(callable(getattr(u, n, None)) for n in REVOKERS):
             return False
 
         def wrap(f):
-            def w(*a):
+            def w(*a, **k):
                 with _shared_lock:
                     _shared.clear()
-                return f(*a)
+                return f(*a, **k)
             return w
-        u._tokens = ops._replace(**{n: wrap(getattr(ops, n)) for n in names})
+        for n in REVOKERS:
+            setattr(u, n, wrap(getattr(u, n)))
         return True
     except Exception as exc:  # never break the tool over the optimisation
         logger.warning("vault-guard: token sharing off: %s", exc)
@@ -98,7 +101,7 @@ def _share_live_token() -> bool:
     from agent.vault_backends import unlock as u
     with _shared_lock:
         tok = _shared.get("token")
-        if not _REVOCABLE or not tok or time.monotonic() - _shared.get("at", 0.0) > u._IDLE_TTL_S:
+        if not _REVOCABLE or not tok or time.monotonic() - _shared.get("at", 0.0) > IDLE_TTL_S:
             _shared.clear()
             return False
     generation = u.begin_unlock("bitwarden")  # a Lock of this profile from here on makes Hermes refuse the commit
@@ -165,8 +168,18 @@ def _audit(**rec) -> None:
         pass
 
 
+def _capture_builtin() -> None:
+    from tools import browser_vault_tool  # noqa: F401  (importing it registers Hermes's own tool)
+    from tools.registry import registry
+    e = registry.get_entry("browser_vault")
+    if e is None:
+        raise RuntimeError("Hermes's browser_vault tool is not registered")
+    # where another profile's copy of this plugin already overrides it, take the built-in that copy captured
+    _BUILTIN.setdefault("handler", getattr(e.handler, "vault_guard_builtin", e.handler))
+    _BUILTIN.setdefault("check", getattr(e.handler, "vault_guard_check", e.check_fn))
+
+
 def _guarded(args: dict, **kwargs) -> str:
-    from tools import browser_vault_tool as bv
     action = str(args.get("action") or "")
     if action in ("list", "unlock", *GUARDED):
         err = _ensure_unlocked()
@@ -181,7 +194,7 @@ def _guarded(args: dict, **kwargs) -> str:
         backend = backend_for_handle(handle)
         meta = backend.get_meta(handle) if backend is not None else None
         if meta is None:
-            return bv._handle_vault(args, **kwargs)  # unknown handle: Hermes's own error, nothing to ask about
+            return _BUILTIN["handler"](args, **kwargs)  # unknown handle: Hermes's own error, nothing to ask about
         what = "a 2FA code" if action == "enter_code" else "the password"
         site = meta.origin or "?"
         who = f" as {meta.identifier}" if meta.identifier else ""
@@ -195,12 +208,14 @@ def _guarded(args: dict, **kwargs) -> str:
             return json.dumps({"success": False, "error_type": "permission_declined",
                                "error": "Permission to use this login was not given. Don't retry; tell the channel "
                                         "and ask how to proceed."})
-    return bv._handle_vault(args, **kwargs)
+    return _BUILTIN["handler"](args, **kwargs)
 
 
 def register(ctx) -> None:
     from tools import browser_vault_tool as bv
+    _capture_builtin()
+    _guarded.vault_guard_builtin, _guarded.vault_guard_check = _BUILTIN["handler"], _BUILTIN["check"]
     schema = dict(bv.BROWSER_VAULT_SCHEMA)
     schema["description"] = schema.get("description", "") + NOTE
     ctx.register_tool(name="browser_vault", toolset="browser", schema=schema, handler=_guarded,
-                      check_fn=bv._check_vault_available, emoji="🔐", override=True)
+                      check_fn=_BUILTIN["check"], emoji="🔐", override=True)

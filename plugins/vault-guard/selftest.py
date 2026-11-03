@@ -21,7 +21,7 @@ import hermes_constants as hc
 assert vg._REVOCABLE, "revocation hook did not attach"
 A, B = tempfile.mkdtemp(), tempfile.mkdtemp()
 cur = {"h": A}
-hc.get_hermes_home = lambda: cur["h"]
+hc.get_hermes_home = lambda: Path(cur["h"])
 state = {"s": "unlocked", "during": None}
 
 
@@ -85,6 +85,19 @@ state["s"] = "locked"
 assert not shared_to_b() and not vg._shared, "bw locked"
 state["s"] = "unlocked"
 reset_and_unlock_a()
-vg._shared["at"] = time.monotonic() - u._IDLE_TTL_S - 1
+vg._shared["at"] = time.monotonic() - vg.IDLE_TTL_S - 1
 assert not shared_to_b() and not vg._shared, "idle expiry"
+
+
+class Ctx:  # register() must find Hermes's own handler through the public registry and override with ours
+    def register_tool(self, **kw):
+        self.kw = kw
+
+
+from tools import browser_vault_tool as bv
+ctx = Ctx()
+vg.register(ctx)
+assert ctx.kw["handler"] is vg._guarded and ctx.kw["override"] is True
+assert vg._BUILTIN["handler"] is bv._handle_vault, "captured handler is not Hermes's own"
+assert vg._guarded.vault_guard_builtin is bv._handle_vault
 print("selftest ok")
