@@ -45,8 +45,7 @@ def main():
         notes = notes[:notes.rfind("\n", 0, MAX_NOTES)].rstrip() + "\n…"
     print(f"**Hermes {tag} is out** (installed: v{have}, released {rel.get('published_at', '')[:10]}).\n\n"
           f"{notes}\n\nFull notes: <{rel['html_url']}>\n"
-          "All four VMs run Hermes. Ask Claude Code to update them when you want; local patches are re-checked "
-          "after an update. This is the only notice for this release.")
+          "This is the only notice for this release.")
     if not dry:
         state["announced"] = tag
         tmp = STATE + ".tmp"
