@@ -3,7 +3,7 @@
 **Rohit's opinionated setup for [Hermes Agent](https://github.com/NousResearch/hermes-agent).** It turns a vanilla
 Hermes install into an always-on team of agents on a small Linux VM: several profiles behind one gateway (Discord),
 Kanban, scheduled maintenance, safer approvals, memory that learns, and fixes for problems hit in daily use.
-It is one way of running Hermes, not the only one. Everything here ran in production on Hermes **v0.22.5**.
+It is one way of running Hermes, not the only one. Everything here ran in production on Hermes **v0.22.6**.
 
 ## Quick start (from a vanilla Hermes install)
 
@@ -19,7 +19,10 @@ hermes-restart-idle                                   # restart the gateway when
 
 Every step is idempotent and keeps a backup of what it changes (`*.bak-kit`). Run a single step with
 `--steps patches,config`. After every `hermes update`, run `setup/install.sh --steps patches` (the daily self-check
-tells you when an update dropped a patch).
+tells you when an update dropped a patch). Since v0.22.6 the built-in browser tools are gone from core: Camofox is the
+catalog plugin `camofox` (Hermes installs it for homes that use Camofox), and a home that had `browser.backend: off`
+needs `agent.disabled_toolsets: [browser]` to stay browser-free. An update or a plugin install can re-sync Hermes's venv
+and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it).
 Before changing the kit, run `setup/test-vanilla.sh`: it installs the kit twice into a throwaway home holding
 vanilla Hermes and checks patches, tools, jobs and the self-check, without touching your real `~/.hermes`.
 
@@ -60,7 +63,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `kanban-guardrail-block-apply.py` | A loop-guard halt in a Kanban worker blocks the card with the reason instead of a protocol-violation crash and restart |
 | `pr-rules-plan-apply.py` | GitHub's 403 "Upgrade to GitHub Pro" on the rulesets endpoint no longer breaks the Kanban PR gate |
 | `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent |
-| `camofox-410-apply.py`, `upload-selector-apply.py` | Camofox: recover from dead tabs; reliable file-upload selectors |
+| `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence |
 | `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones |
 | `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written |
@@ -68,7 +71,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure |
 | `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
-| `cron-shared-bot-delivery.patch`, `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Cron delivery with a shared bot; slash-command auth with a late dependency; opt-in team `@here` notifications |
+| `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications (`git apply`; made against v0.22.6) |
 
 ### `plugins/`
 `outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval), `approval-notify`, `ask-assistant` (a locked
