@@ -71,7 +71,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure |
 | `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
-| `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` line sends a post without a push or sound (`git apply`; made against v0.22.6) |
+| `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) |
 
 ### `plugins/`
 `outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval), `approval-notify`, `ask-assistant` (a locked

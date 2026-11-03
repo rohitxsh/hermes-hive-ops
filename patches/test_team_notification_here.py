@@ -170,12 +170,14 @@ class SilentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a._team_notification_payload('@silent\nx', enabled=False, can_silence=True), ('x', {'silent': True}))
 
     def test_silent_only_as_a_standalone_first_line(self):
+        self.assertEqual(a._team_notification_payload('@silent **Account usage**\n- x', enabled=True, notify=True,
+                                                      can_silence=True), ('**Account usage**\n- x', {'silent': True}))
         for text in ('@silently here', 'note: @silent\nx', 'x\n@silent'):
             self.assertEqual(a._team_notification_payload(text, enabled=True, can_silence=True), (text, {}))
 
     async def test_silent_cron_send(self):
         adapter, channel = make_adapter()
-        result = await adapter.send('99', '@silent\n**Account usage**\n- Codex weekly: 40%', metadata={'job_id': 'hourly'})
+        result = await adapter.send('99', '@silent **Account usage**\n- Codex weekly: 40%', metadata={'job_id': 'hourly'})
         self.assertTrue(result.success)
         payload = channel.send.call_args.kwargs
         self.assertEqual(payload['content'], '**Account usage**\n- Codex weekly: 40%')
@@ -190,6 +192,12 @@ class SilentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertTrue(channel.create_thread.call_args.kwargs['silent'])
         self.assertNotIn('@here', channel.create_thread.call_args.kwargs['content'])
+
+    def test_cron_does_not_swallow_inline_silent(self):
+        # the scheduler runs this matcher before the adapter: a lone "@silent" line means "post nothing"
+        from gateway.response_filters import is_autonomous_silence_response
+        self.assertFalse(is_autonomous_silence_response('@silent **Account usage**\n- Codex weekly: 40%'))
+        self.assertTrue(is_autonomous_silence_response('@silent\n**Account usage**'))
 
 
 if __name__ == '__main__':
