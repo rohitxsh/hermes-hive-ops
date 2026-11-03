@@ -160,11 +160,17 @@ def collect(state, now, jobs):
                 yield f"CHECK|{normalize(msg)}", "CHECK", "self-check", prof, msg, now
 
 
+# Printed at every planned gateway restart (multiplexed host notice; sessions paused while the runtime drains).
+DEFAULT_KNOWN = (r"^gateway\.run: --replace target PID [0-9]+ is the host gateway serving",
+                 r"^gateway\.session_authority: Session \S+ paused: runtime_draining")
+
+
 def known_patterns():
     try:
         lines = open(KNOWN).read().splitlines()
     except OSError:
-        return []
+        lines = []
+    lines = [*DEFAULT_KNOWN, *lines]
     out = []
     for line in lines:
         line = line.strip()
