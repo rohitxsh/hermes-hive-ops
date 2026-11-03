@@ -73,6 +73,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure |
 | `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` |
 | `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` |
+| `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
 | `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) |
 

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -46,13 +47,79 @@ def _bitwarden():
     return next((b for b in enabled_backends() if b.name == "bitwarden"), None)
 
 
-def _share_live_token() -> bool:
-    """Reuse another profile's live Bitwarden session for this profile instead of unlocking again."""
+_shared: dict = {}  # the last Bitwarden session any profile in this process used: {"token", "at"}
+_shared_lock = threading.Lock()  # revocations clear _shared under it; a share commits only under it
+
+
+def _revocation_hook() -> bool:
+    """Drop the shared copy whenever Hermes forgets a token anywhere (session close, lock, shutdown).
+
+    Hermes's module functions call these ops through ``unlock._tokens`` at call time, so wrapping them there covers
+    every caller. False (sharing off) when the store no longer looks like this."""
+    try:
+        from agent.vault_backends import unlock as u
+        ops = u._tokens
+        names = ("lock_profile", "release", "lock_everything")
+        if not all(callable(getattr(ops, n, None)) for n in names) or not hasattr(ops, "_replace"):
+            return False
+
+        def wrap(f):
+            def w(*a):
+                with _shared_lock:
+                    _shared.clear()
+                return f(*a)
+            return w
+        u._tokens = ops._replace(**{n: wrap(getattr(ops, n)) for n in names})
+        return True
+    except Exception as exc:  # never break the tool over the optimisation
+        logger.warning("vault-guard: token sharing off: %s", exc)
+        return False
+
+
+_REVOCABLE = _revocation_hook()
+
+
+def _remember() -> None:
     from agent.vault_backends import unlock as u
-    with u._lock:
-        live = [(tok, last) for (home, backend), (tok, last) in u._sessions.items()
-                if backend == "bitwarden" and time.monotonic() - last <= u._IDLE_TTL_S]
-    return bool(live) and u.store_session_token("bitwarden", max(live, key=lambda x: x[1])[0])
+    tok = u.get_session_token("bitwarden")
+    if tok and _REVOCABLE:
+        with _shared_lock:
+            if _shared.get("token") != tok:  # a fresh unlock: the session running now owns it
+                _shared["owner"] = u.get_current_session_id()
+            _shared.update(token=tok, at=time.monotonic())
+
+
+def _share_live_token() -> bool:
+    """Reuse another profile's live Bitwarden session for this profile instead of unlocking again (a second
+    `bw unlock` would invalidate the first).
+
+    Hermes keeps each profile's token private (since 2026-10-25), so the plugin remembers the last one itself,
+    under the same idle expiry, drops it on any revocation (_revocation_hook), and checks it with `bw status`."""
+    from agent.vault_backends import unlock as u
+    with _shared_lock:
+        tok = _shared.get("token")
+        if not _REVOCABLE or not tok or time.monotonic() - _shared.get("at", 0.0) > u._IDLE_TTL_S:
+            _shared.clear()
+            return False
+    generation = u.begin_unlock("bitwarden")  # a Lock of this profile from here on makes Hermes refuse the commit
+    try:
+        ok = json.loads(_bw("status", env={"BW_SESSION": tok}).stdout or "{}").get("status") == "unlocked"
+    except (ValueError, OSError, subprocess.SubprocessError):
+        ok = False
+    with _shared_lock:
+        if _shared.get("token") != tok:  # revoked (or replaced) while bw status ran: never commit the old token
+            return False
+        if not ok:
+            _shared.clear()
+            return False
+        _shared["at"] = time.monotonic()
+        # the copy stays owned by the session that unlocked it, so that session's close revokes it here too
+        mine = u.get_current_session_id()
+        u.set_current_session_id(_shared.get("owner"))
+        try:
+            return u.store_session_token("bitwarden", tok, generation)
+        finally:
+            u.set_current_session_id(mine)
 
 
 def _ensure_unlocked() -> str | None:
@@ -60,7 +127,10 @@ def _ensure_unlocked() -> str | None:
     b = _bitwarden()
     if b is None:
         return "Bitwarden isn't available here (bw CLI not found or vault.bitwarden disabled)"
-    if b.is_unlocked() or _share_live_token():
+    if b.is_unlocked():
+        _remember()
+        return None
+    if _share_live_token():
         return None
     try:
         if json.loads(_bw("status").stdout or "{}").get("status") == "unauthenticated":
@@ -74,6 +144,7 @@ def _ensure_unlocked() -> str | None:
             del master
         from agent.vault_backends import unlock as u
         _bw("sync", env={"BW_SESSION": u.get_session_token("bitwarden") or ""})  # items added since the last sync
+        _remember()
     except Exception as exc:
         logger.warning("vault-guard: unlock failed: %s", exc)
         return f"Bitwarden unlock failed: {str(exc)[:160]}"
