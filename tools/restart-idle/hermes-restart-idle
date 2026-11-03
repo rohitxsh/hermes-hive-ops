@@ -4,7 +4,10 @@
 Gracefully restart this VM's Hermes gateway only when it is idle, so chat messages don't land in the restart
 window (where Hermes can refuse them with "runtime_draining"). Idle = no agent turn running (no live turn lease in
 any profile's state.db) and no inbound chat message for QUIET seconds; checked every 15 s. After --max-wait
-(default 1800 s) it restarts anyway, and Hermes still lets running turns finish first. --webui also restarts the
+(default 1800 s) it restarts anyway, and Hermes still lets running turns finish first. Running Kanban tasks are
+waited for up to --max-wait-kanban (default 3 h): a restart ends them even though their workers run in their own
+scopes (the run is booked crashed and starts over; upstream issue NousResearch/hermes-agent#148593), so don't
+lower it unless losing that work is fine. --webui also restarts the
 web UI. Run it as root through systemd-run so it survives the restart it triggers:
   sudo systemd-run --unit hermes-restart-idle --collect ~/.local/bin/hermes-restart-idle --webui
 """
