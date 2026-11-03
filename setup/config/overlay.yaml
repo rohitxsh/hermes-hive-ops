@@ -73,3 +73,6 @@ secrets:
     command: ~/.local/bin/hermes-sealed-env   # sealed credentials into each profile's environment
 cron:
   wrap_response: false            # scheduled-job posts show just the message, no "Cronjob Response" header or footer
+stt:
+  local:
+    model: small                    # local Whisper for voice: small is clearly more accurate than base, ~0.5 GB RAM

@@ -13,7 +13,7 @@ cp setup/settings.env.example setup/settings.env      # fill it in (nothing secr
 setup/install.sh --dry-run                            # see what it would do
 setup/install.sh                                      # bin tools plugins patches skills third-party config soul health jobs brain
 sudo setup/services/install-services.sh "$USER" hermes   # optional: run the gateway as a systemd service
-setup/devtools/install-devtools.sh claude codex gh    # optional: coding CLIs for coding agents
+setup/devtools/install-devtools.sh claude codex gh rtk context7   # optional: coding CLIs (+ RTK, Context7) for coding agents
 hermes-restart-idle                                   # restart the gateway when no turn is running
 ```
 
@@ -37,6 +37,8 @@ vanilla Hermes and checks patches, tools, jobs and the self-check, without touch
   its `.env`, and list web-only chat profiles in `LOCKED_PROFILES` before running the config step. See
   `docs/new-profile.md`.
 - **Sign-ins.** Model providers, Claude Code, Codex and gh are signed in by you.
+- **Voice.** Discord voice playback needs the Opus codec, a system package: `sudo apt-get install libopus0`. For Talk in
+  Discord voice, list who may run mutating tools by voice in each profile's `.env`: `TALK_DISCORD_OPERATOR_USER_IDS=<ids>`.
 - **Optional services:** SearXNG (set `SEARXNG_URL` per profile), Camofox, Vaultwarden, the web UIs; see
   `setup/services/` and `setup/third-party/install.sh`.
 
@@ -53,7 +55,7 @@ vanilla Hermes and checks patches, tools, jobs and the self-check, without touch
 | `health/agent-health.sh` | Daily self-check: silent when healthy, one line per problem |
 | `brain/setup-brain.py` | `~/brain`, plain-Markdown long-term notes in local git, filed nightly by memory-learn |
 | `third-party/install.sh` | Pinned third-party pieces (below) |
-| `devtools/` | Claude Code, Codex CLI, gh, Flutter, Supabase CLI with checksum checks |
+| `devtools/` | Claude Code, Codex CLI, gh, Flutter, Supabase CLI with checksum checks; RTK 1.1.0 (condensed Bash output, hooked into Claude Code) and the Context7 MCP for Claude Code |
 
 ### `patches/` — fixes to Hermes itself
 Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--check` and `--test`.
@@ -106,7 +108,10 @@ design docs) and `docs-bootstrap` (contract-style READMEs for code that has no d
 [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) @ 1ecea19,
 Anthropic's [data-visualization](https://github.com/anthropics/knowledge-work-plugins) @ 2574e29 and
 [frontend-design](https://github.com/anthropics/claude-plugins-official),
-camofox-browser 1.18.1, markitdown 0.1.9, [hermes-webui](https://github.com/nesquena/hermes-webui) v0.52.544,
+camofox-browser 1.18.1, markitdown 0.1.9, Hermes's `edge-tts` and `stt-whisper` extras (local Whisper `small`),
+the catalog plugins `hermes-talk` 0.22.1 (realtime voice on the ChatGPT subscription; non-default profile copies keep
+their `pyproject.toml` aside, or the shared venv refuses a second `hermes-talk` package) and `memory-wiki`,
+[Agent Reach](https://github.com/Panniantong/Agent-Reach) 1.6.1 (release wheel, sha256 pinned, uv-managed Python), [hermes-webui](https://github.com/nesquena/hermes-webui) v0.52.544,
 [hermes-workspace](https://github.com/outsourc-e/hermes-workspace) v2.3.0.
 
 ## Conventions

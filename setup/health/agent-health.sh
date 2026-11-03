@@ -37,6 +37,10 @@ use=$(df --output=pcent "$HOME" | tail -1 | tr -dc 0-9); [ "${use:-0}" -ge 85 ] 
 [ -d "$HOME/brain" ] && { git -C "$HOME/brain" rev-parse >/dev/null 2>&1 || p+=("~/brain exists but is not a git repository"); }
 # document libraries for the docx/xlsx/powerpoint/pdf skills
 /usr/bin/python3 "$HOME/agents/src/doclibs-check/doclibs-check" 2>/dev/null || [ ! -f "$HOME/agents/src/doclibs-check/doclibs-check" ] || p+=("document libraries missing from Hermes's venv: re-run setup/install.sh --steps third-party")
+# hermes-talk: a plugin update brings a profile copy's pyproject.toml back, and the next venv sync then fails
+for f in "$HOME"/.hermes/profiles/*/plugins/hermes-talk/pyproject.toml; do
+  [ -e "$f" ] && p+=("hermes-talk in profile $(basename "$(dirname "$(dirname "$(dirname "$f")")")") has its pyproject.toml back (plugin update?): it collides with the default profile's package and the next venv sync fails; move it to ~/agents/src/talk-pyproject-aside/<profile>/")
+done
 
 if [ ${#p[@]} -gt 0 ]; then
   echo "$(hostname) self-check found ${#p[@]} problem(s):"; printf -- '- %s\n' "${p[@]}"; exit 1
