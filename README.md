@@ -60,23 +60,25 @@ vanilla Hermes and checks patches, tools, jobs and the self-check, without touch
 ### `patches/` — fixes to Hermes itself
 Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--check` and `--test`.
 
-| Patch | What it fixes |
-|---|---|
-| `kanban-guardrail-block-apply.py` | A loop-guard halt in a Kanban worker blocks the card with the reason instead of a protocol-violation crash and restart |
-| `pr-rules-plan-apply.py` | GitHub's 403 "Upgrade to GitHub Pro" on the rulesets endpoint no longer breaks the Kanban PR gate |
-| `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent |
-| `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) |
-| `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence |
-| `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones |
-| `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written |
-| `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files mid-backup; any other missing file still fails it |
-| `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure |
-| `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` |
-| `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` |
-| `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) |
-| `kanban-pr-guard-author-apply.py` | The duplicate-PR guard (`active_pr`) counts only PR links in comments by the card's own assignee, so a PM or reviewer citing a PR no longer holds an unrelated ready card for 24 h ("kanban dispatcher stuck") |
-| `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) |
-| `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) |
+| Patch | What it fixes | Upstream (NousResearch/hermes-agent) |
+|---|---|---|
+| `kanban-guardrail-block-apply.py` | A loop-guard halt in a Kanban worker blocks the card with the reason instead of a protocol-violation crash and restart | PR #103907 (open) |
+| `pr-rules-plan-apply.py` | GitHub's 403 "Upgrade to GitHub Pro" on the rulesets endpoint no longer breaks the Kanban PR gate | PR #143935 (open) |
+| `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent | PR #120266 (open; leading mode suggested) |
+| `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) | Camofox server, not Hermes |
+| `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |
+| `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones | PRs #148610, #148611 |
+| `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written | issue #109453 |
+| `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files mid-backup; any other missing file still fails it | PR #147369 (open) |
+| `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure | none (needs the local `md-pdf`) |
+| `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` | issue #147262, PR #139034 |
+| `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` | PR #145090 (open) |
+| `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) | PR #148598 |
+| `kanban-pr-guard-author-apply.py` | The duplicate-PR guard (`active_pr`) counts only PR links in comments by the card's own assignee, so a PM or reviewer citing a PR no longer holds an unrelated ready card for 24 h ("kanban dispatcher stuck") | PR #146075 (open) |
+| `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) | PRs #98873 (cron), #135169 (verdict parsing) |
+| `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) | PR #146972; `@silent`: issue #148594 |
+
+Drop a patch once its upstream fix is in the Hermes release you run (each patch's `--check` then reports the anchor missing, and the health check flags it).
 
 ### `plugins/`
 `outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval), `approval-notify`, `ask-assistant` (a locked
