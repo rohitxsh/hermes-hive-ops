@@ -114,6 +114,12 @@ their `pyproject.toml` aside, or the shared venv refuses a second `hermes-talk` 
 [Agent Reach](https://github.com/Panniantong/Agent-Reach) 1.6.1 (release wheel, sha256 pinned, uv-managed Python), [hermes-webui](https://github.com/nesquena/hermes-webui) v0.52.544,
 [hermes-workspace](https://github.com/outsourc-e/hermes-workspace) v2.3.0.
 
+### Attention renewals
+
+`~/agents/attention/config.json` lists `domains` (expiry via RDAP) and optional `renewal_commands`: commands that print
+a date, each run once a day, for subscriptions with a status command. For example, a data-plan check:
+`{"name": "Data plan", "command": "plan-status", "pattern": "validUntil\s+(\S+)", "note": "renew it"}`.
+
 ## Conventions
 
 Hermes at `~/.hermes`; kit tools in `~/agents/src/`, commands in `~/.local/bin`; secrets in `/etc/credstore.encrypted`;
