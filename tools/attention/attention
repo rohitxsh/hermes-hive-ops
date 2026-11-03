@@ -2,8 +2,8 @@
 """attention (2026-11-01: inspired by always-on assistants; event-only alerts, no morning briefs). No model calls.
 
   attention check            scheduled (Hermes cron, no agent): prints only NEW events, so nothing is posted when
-                             nothing happened: renewals due in <=7 days, <=1 day or expired (GitHub tokens and the broker's
-                             Data Plan detected automatically, domains via RDAP, the rest from `renewals add`), items
+                             nothing happened: renewals due in <=7 days, <=1 day or expired (GitHub tokens, domains via RDAP
+                             and any renewal_commands in config.json detected automatically, the rest from `renewals add`), items
                              waiting on a person for over 24 h (blocked Kanban cards, unanswered approvals), follow-ups
                              past due, and failed CI runs on the default branch of the GitHub checkouts under ~/work.
   waiting-on-me              everything currently waiting on a person, across all agents on this VM
@@ -54,7 +54,7 @@ def run(cmd, cwd=None, timeout=60):
 
 
 def parse_date(s):
-    """Date from 'YYYY-MM-DD...' (GitHub, RDAP, broker) or 'DD/MM/YYYY'; None otherwise."""
+    """Date from 'YYYY-MM-DD...' (GitHub, RDAP, renewal commands) or 'DD/MM/YYYY'; None otherwise."""
     s = str(s).strip()
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s) or re.match(r"(\d{2})/(\d{2})/(\d{4})", s)
     if not m:
@@ -121,13 +121,15 @@ def renewals():
     for d, date in (dcache.get("dates") or {}).items():
         if date:
             items.setdefault(f"domain {d}", {"name": f"domain {d}", "date": date, "note": "renew at the registrar"})
-    if os.path.exists("/usr/local/bin/broker-status") or os.path.exists(f"{H}/.local/bin/broker-status"):
-        if cache.get("broker_checked") != str(TODAY):
-            rc, out = run(["bash", "-lc", "broker-status"])
-            m = re.search(r"dataValidity\s+(\S+)", out)
-            cache.update(broker_checked=str(TODAY), broker_data=m.group(1) if m else None)
-        if cache.get("broker_data"):
-            items.setdefault("Broker data plan", {"name": "Broker data plan", "date": cache["broker_data"], "note": "renewing is the owner's call"})
+    # config.json "renewal_commands": [{"name", "command", "pattern" (regex, group 1 = the date), "note"}], one run a day each
+    ccache = cache.setdefault("commands", {})
+    for c in load("config.json", {}).get("renewal_commands", []):
+        if ccache.get(c["name"], {}).get("checked") != str(TODAY):
+            rc, out = run(["bash", "-lc", c["command"]])
+            m = re.search(c.get("pattern", r"(\d{4}-\d{2}-\d{2})"), out)
+            ccache[c["name"]] = {"checked": str(TODAY), "date": m.group(1) if m else None}
+        if ccache[c["name"]].get("date"):
+            items.setdefault(c["name"], {"name": c["name"], "date": ccache[c["name"]]["date"], "note": c.get("note", "")})
     save("auto-cache.json", cache)
     return list(items.values())
 
@@ -503,10 +505,13 @@ def selftest():
     assert review_items(["- a", "APPROVED: all", "- b", "# batch 2", "- c"], pat) == 1
     assert parse_date("2026-12-01 00:00:00 +0530") == dt.date(2026, 12, 1) and parse_date("2026-11-30 00:30:02.0") == dt.date(2026, 11, 30)
     save("renewals.json", [{"name": "x", "date": str(TODAY + dt.timedelta(days=5)), "note": "n"}])
-    save("auto-cache.json", {"github": {"checked": str(TODAY), "dates": {}}, "domains": {"checked": str(TODAY), "dates": {}}, "broker_checked": str(TODAY)})
+    save("auto-cache.json", {"github": {"checked": str(TODAY), "dates": {}}, "domains": {"checked": str(TODAY), "dates": {}}, "commands": {}})
     ev = renewal_events({})
     assert len(ev) == 1 and "in 5 day" in ev[0][1], ev
     assert renewal_events({ev[0][0]: "x"}) == []
+    save("config.json", {"renewal_commands": [{"name": "plan", "command": "echo 'valid until 2026-12-01'", "note": "n"}]})
+    assert any(r["name"] == "plan" and r["date"] == "2026-12-01" for r in renewals()), load("auto-cache.json", {})
+    save("config.json", {})
     save("followups.json", [{"id": "f1", "due": str(TODAY), "text": "t"}, {"id": "f2", "due": str(TODAY + dt.timedelta(days=3)), "text": "u"}])
     fe = followup_events({})
     assert [k for k, _ in fe] == ["followup:f1"], fe
