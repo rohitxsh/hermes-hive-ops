@@ -160,5 +160,37 @@ class OverflowRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not p['allowed_mentions'].users for p in payloads))
 
 
+class SilentTests(unittest.IsolatedAsyncioTestCase):
+    def test_leading_silent_line_drops_here_and_silences(self):
+        self.assertEqual(a._team_notification_payload('@silent\n**Account usage**', enabled=True, notify=True,
+                                                      can_silence=True), ('**Account usage**', {'silent': True}))
+        # edits can't be silenced: the line still goes, nothing else is added
+        self.assertEqual(a._team_notification_payload('@silent\nx', enabled=True, notify=True), ('x', {}))
+        # honoured with the @here policy off too
+        self.assertEqual(a._team_notification_payload('@silent\nx', enabled=False, can_silence=True), ('x', {'silent': True}))
+
+    def test_silent_only_as_a_standalone_first_line(self):
+        for text in ('@silently here', 'note: @silent\nx', 'x\n@silent'):
+            self.assertEqual(a._team_notification_payload(text, enabled=True, can_silence=True), (text, {}))
+
+    async def test_silent_cron_send(self):
+        adapter, channel = make_adapter()
+        result = await adapter.send('99', '@silent\n**Account usage**\n- Codex weekly: 40%', metadata={'job_id': 'hourly'})
+        self.assertTrue(result.success)
+        payload = channel.send.call_args.kwargs
+        self.assertEqual(payload['content'], '**Account usage**\n- Codex weekly: 40%')
+        self.assertTrue(payload['silent'])
+        self.assertNotIn('allowed_mentions', payload)
+
+    async def test_silent_forum_send(self):
+        adapter, channel = make_adapter()
+        adapter._is_forum_parent = lambda channel: True
+        channel.create_thread = AsyncMock(return_value=SimpleNamespace(id=42, send=AsyncMock()))
+        result = await adapter.send('99', '@silent\nreport', metadata={'job_id': 'report'})
+        self.assertTrue(result.success)
+        self.assertTrue(channel.create_thread.call_args.kwargs['silent'])
+        self.assertNotIn('@here', channel.create_thread.call_args.kwargs['content'])
+
+
 if __name__ == '__main__':
     unittest.main()
