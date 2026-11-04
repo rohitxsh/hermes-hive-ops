@@ -201,11 +201,31 @@ def main():
     qr.MAX_PER_TICK = 1
     refused = qr.tick(home2, lambda *a, **k: False, False, now=NOW)
     assert sum(d in ("retry", "ask") for d, _, _ in refused) == 1, refused
-    assert [v["decision"] for v in json.load(open(os.path.join(home2, qr.STATE)))["handled"].values()] == ["expired"]
+    h2 = json.load(open(os.path.join(home2, qr.STATE)))["handled"]
+    assert sorted(v["status"] for v in h2.values()) == ["expired", "pending"], h2
+    assert [v["retry_after"] for v in h2.values() if v["status"] == "pending"] == [NOW + qr.LOST_AFTER]
     sent2 = []
     qr.tick(home2, lambda c, role="user", **k: sent2.append(k["session_key"]) or True, False, now=NOW)
-    assert len(sent2) == 1, sent2
+    assert len(sent2) == 1 and sent2[0] != "agent:p:discord:group:1:2", sent2   # the refused one waits 30 min
     qr.MAX_PER_TICK = 3
+
+    # the failed session was ended by /new (session_reset): inject by chat origin, not by its session key
+    home4 = tempfile.mkdtemp()
+    origin = {"platform": "discord", "chat_id": "999", "chat_type": "thread", "thread_id": "999", "user_id": "2",
+              "user_name": "Alex", "profile": "p"}
+    db = sqlite3.connect(os.path.join(home4, "state.db"))
+    db.executescript(SCHEMA)
+    db.execute("INSERT INTO sessions (id, source, session_key, started_at, ended_at, end_reason, origin_json) "
+               "VALUES ('reset', 'discord', 'agent:p:discord:thread:999:999', ?, ?, 'session_reset', ?)",
+               (NOW - 4000, NOW - 60, json.dumps(origin)))
+    db.commit()
+    db.close()
+    append(home4, "reset", ("user", "[Alex] need inventory ideas", None, None, NOW - 3600),
+           ("assistant", "Your request was not processed.", "failed_turn", Q429, NOW - 3590))
+    got = []
+    qr.tick(home4, lambda content, role="user", *, session_key=None, origin=None: got.append((session_key, origin)) or True,
+            False, now=NOW)
+    assert got == [(None, origin)], got
 
     # quota_lib can't tell: retried only an hour after the failure
     home3 = tempfile.mkdtemp()

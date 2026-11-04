@@ -81,12 +81,12 @@ def candidates(home: str, now: float, max_age: float = MAX_AGE) -> list[dict]:
     db = _connect(home)
     try:
         failures = db.execute(
-            "SELECT m.id, m.session_id, m.timestamp, m.display_metadata, s.session_key FROM messages m "
+            "SELECT m.id, m.session_id, m.timestamp, m.display_metadata, s.session_key, s.origin_json FROM messages m "
             "JOIN sessions s ON s.id = m.session_id WHERE m.role = 'assistant' AND m.display_kind = 'failed_turn' "
             "AND m.active = 1 AND m.timestamp > ? AND COALESCE(s.session_key, '') != '' "
             f"AND s.source IN ({','.join('?' * len(sources))}) ORDER BY m.id", (now - 2 * max_age, *sources)).fetchall()
         out = []
-        for fid, sid, ts, meta, key in failures:
+        for fid, sid, ts, meta, key, origin in failures:
             if not is_quota_error(_error(meta)):
                 continue
             trig = db.execute("SELECT id, content, display_kind, timestamp FROM messages WHERE session_id = ? AND id < ? "
@@ -109,7 +109,7 @@ def candidates(home: str, now: float, max_age: float = MAX_AGE) -> list[dict]:
                 "FROM messages u WHERE u.session_id = a.session_id AND u.id < a.id AND u.role = 'user' AND u.active = 1 "
                 "ORDER BY u.id DESC LIMIT 1)", (sid, fid, PREFIX)).fetchone()
             if not newer:
-                out.append({"id": fid, "session_id": sid, "session_key": key, "at": ts, "since": trig[3],
+                out.append({"id": fid, "session_id": sid, "session_key": key, "origin": origin, "at": ts, "since": trig[3],
                             "text": trig[1], "ran": bool(ran)})
         return out
     finally:
@@ -161,6 +161,18 @@ def _outcome(db, key: str, injected_at: float, now: float):
     ran = db.execute("SELECT 1 FROM messages WHERE session_id = ? AND id > ? AND id < ? AND active = 1 AND "
                      "(role = 'tool' OR (role = 'assistant' AND tool_calls IS NOT NULL)) LIMIT 1", (r[1], r[0], a[0])).fetchone()
     return ("quota" if is_quota_error(_error(a[2])) else "failed"), bool(ran)
+
+
+def _inject(inject, text: str, c: dict) -> bool:
+    """By chat origin (the session's stored SessionSource.to_dict()): Hermes routes it to that chat's current
+    session in this profile, also after /new ended the failed one. By session_key only when there is no origin."""
+    try:
+        origin = json.loads(c.get("origin") or "null")
+    except ValueError:
+        origin = None
+    if isinstance(origin, dict) and origin.get("platform") and origin.get("chat_id"):
+        return bool(inject(text, role="user", origin=origin))
+    return bool(inject(text, role="user", session_key=c["session_key"]))
 
 
 def follow_up(home: str, handled: dict, now: float) -> bool:
@@ -227,7 +239,8 @@ def tick(home: str, inject, dry_run: bool, now: float | None = None, seen: set |
     handled = state["handled"]
     changed = not dry_run and follow_up(home, handled, now)
     found = [c for c in candidates(home, now, max_age)
-             if handled.get(str(c["id"]), {}).get("status", "pending") == "pending"]
+             if handled.get(str(c["id"]), {}).get("status", "pending") == "pending"
+             and handled.get(str(c["id"]), {}).get("retry_after", 0) <= now]
     profile, done, budget = _profile(home), [], MAX_PER_TICK
     for c in found:
         entry = handled.get(str(c["id"]), {})
@@ -252,15 +265,18 @@ def tick(home: str, inject, dry_run: bool, now: float | None = None, seen: set |
             if seen is not None:
                 seen.add(c["id"])
             continue
-        if decision != "expired" and not inject(message(c, decision, now), role="user", session_key=c["session_key"]):
-            log.warning("quota-retry[%s]: gateway did not accept the %s for session %s; trying again next scan",
-                        profile, decision, c["session_id"])
-            continue
         attempts = entry.get("attempts", 0) + (decision != "expired")
-        handled[str(c["id"])] = {**entry, "status": "expired" if decision == "expired" else "injected",
-                                 "decision": decision, "attempts": attempts, "failed_at": c["at"], "injected_at": now,
-                                 "session_id": c["session_id"], "session_key": c["session_key"]}
+        base = {**entry, "decision": decision, "attempts": attempts, "failed_at": c["at"], "injected_at": now,
+                "session_id": c["session_id"], "session_key": c["session_key"]}
         changed = True
+        if decision != "expired" and not _inject(inject, message(c, decision, now), c):
+            # refused right away (e.g. the chat's fresh session after /new has no human message yet): an attempt
+            status = "gave_up" if attempts >= MAX_ATTEMPTS else "pending"
+            handled[str(c["id"])] = {**base, "status": status, "retry_after": now + LOST_AFTER}
+            log.warning("quota-retry[%s]: gateway refused the %s for session %s (attempt %d) -> %s", profile, decision,
+                        c["session_id"], attempts, status)
+            continue
+        handled[str(c["id"])] = {**base, "status": "expired" if decision == "expired" else "injected"}
         log.info("quota-retry[%s]: %s failed turn %s in session %s (attempt %d; %s)", profile,
                  {"retry": "retried", "ask": "asked about", "expired": "expired (not retried)"}[decision],
                  c["id"], c["session_id"], attempts, why)
