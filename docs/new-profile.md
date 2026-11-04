@@ -24,7 +24,7 @@ The clone copies config.yaml, .env, SOUL.md and skills. Its config already carri
 - **Discord settings:** the clone drops these; copy them from the source and point them at the new channel:
   - `DISCORD_ALLOWED_USERS` (same as the source);
   - `DISCORD_REQUIRE_MENTION` (same as the source);
-  - `DISCORD_FREE_RESPONSE_CHANNELS=<channel id>`;
+  - `DISCORD_FREE_RESPONSE_CHANNELS=<channel id>` (with the overlay's `discord.free_response_auto_thread: true`, each new message there still starts its own thread);
   - `DISCORD_HOME_CHANNEL=<channel id>`.
 - **Keys every profile needs:** `SEARXNG_URL`, `BROWSER_PATH`, `HERMES_CRON_TIMEOUT` and `TERMINAL_TIMEOUT`. Without `SEARXNG_URL`, search silently falls back to the cloud; without `BROWSER_PATH`, chart PNG export fails.
 - **Credentials:** never put them in .env. They come from sealed credentials through `secrets.command` (`hermes-sealed-env ...`).
