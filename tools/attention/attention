@@ -306,7 +306,17 @@ def ci_events(state):
 
 # ---------- PR approval -> resume ----------
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+PR_NUM = re.compile(r"\bPR #(\d+)\b")
 APPROVE_WORDS = re.compile(r"^\s*(approved?|lgtm|looks good|ship it)\b", re.I)
+
+
+def pr_refs(text, reason, repo):
+    """PRs a waiting card names: full PR URLs anywhere, plus "PR #N" in its park/block reason when config sets
+    default_repo. Agents write "PR #N": a PR URL in the assignee's own comment makes Hermes hold the card for 24 h."""
+    refs = set(PR_URL.findall(text))
+    if repo:
+        refs |= {(repo, n) for n in PR_NUM.findall(reason or "")}
+    return sorted(refs)
 
 
 def pr_approved(slug, num, since, owner):
@@ -372,7 +382,8 @@ def pr_resume():
             continue
         body = (c.execute("select coalesce(body,'') from tasks where id=?", (t["id"],)).fetchone() or [""])[0]
         comments = " ".join(b for b, in c.execute("select body from task_comments where task_id=? order by created_at desc limit 5", (t["id"],)))
-        prs = sorted(set(PR_URL.findall(" ".join([t["title"] or "", body, t["reason"] or "", comments]))))
+        prs = pr_refs(" ".join([t["title"] or "", body, t["reason"] or "", comments]), t["reason"],
+                      load("config.json", {}).get("default_repo", ""))
         if not prs:
             continue
         results = [(slug, num, *pr_approved(slug, num, t["since"], owner)) for slug, num in prs]
@@ -497,6 +508,8 @@ def renewal_cmd(args):
 
 
 def selftest():
+    assert pr_refs("see https://github.com/o/r/pull/7", "waiting on PR #38 (issue #37)", "o/r") == [("o/r", "38"), ("o/r", "7")]
+    assert pr_refs("PR #9 in a comment", "", "o/r") == [] and pr_refs("", "PR #38", "") == []
     global D, TODAY
     import tempfile
     D = tempfile.mkdtemp()
