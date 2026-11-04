@@ -339,9 +339,15 @@ def pr_verdict(d, since, owner, agents=()):
     otherwise. agents: the agents' own GitHub logins (their comments don't count)."""
     if d.get("state") == "CLOSED" and not d.get("mergedAt"):
         return None, "closed unmerged"
+    after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
     if d.get("state") == "MERGED":
-        return True, "merged"
-    if d.get("reviewDecision") == "APPROVED":
+        # a merge from before the card waited is history the card mentions, not what it waits on
+        return (True, "merged") if (d.get("mergedAt") or "") >= after else (None, "merged before the card waited")
+    qa_passed = any((l.get("name") or "").lower() == "qa-passed" for l in d.get("labels") or [])
+    if d.get("reviewDecision") == "APPROVED" and (
+            "reviews" not in d or qa_passed
+            or any(r.get("state") == "APPROVED" and (r.get("submittedAt") or "") >= after for r in d["reviews"] or [])):
+        # an approval from before the card waited wakes it only once QA has passed the PR (a dev waiting to merge)
         return True, "approved in review"
     if any((l.get("name") or "").lower() in ("approved", "owner-approved") for l in d.get("labels") or []):
         return True, "labelled approved"
@@ -518,6 +524,11 @@ def selftest():
     since = dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc).timestamp()
     rv = lambda who, st, when="2026-11-02T10:00:00Z", body="": {"author": {"login": who}, "state": st, "submittedAt": when, "body": body}
     assert pr_verdict({"reviewDecision": "APPROVED"}, since, "") == (True, "approved in review")
+    old = [{"author": {"login": "reviewer-a"}, "state": "APPROVED", "submittedAt": "2026-11-01T10:00:00Z"}]
+    assert pr_verdict({"reviewDecision": "APPROVED", "reviews": old}, since, "") == (False, "waiting")
+    assert pr_verdict({"reviewDecision": "APPROVED", "reviews": old, "labels": [{"name": "qa-passed"}]}, since, "")[0] is True
+    assert pr_verdict({"reviewDecision": "APPROVED", "reviews": [dict(old[0], submittedAt="2026-11-03T10:00:00Z")]}, since, "")[0] is True
+    assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-01T10:00:00Z"}, since, "") == (None, "merged before the card waited")
     assert pr_verdict({"state": "CLOSED", "mergedAt": None}, since, "") == (None, "closed unmerged")
     assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-02T10:00:00Z"}, since, "")[0] is True
     assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED")]}, since, "")[0] == "changes"
