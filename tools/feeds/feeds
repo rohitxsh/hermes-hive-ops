@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""feeds: read the shared Miniflux feed reader (no model calls).
+
+  feeds new [--category NAME] [--limit N] [--peek]   entries added since this profile last looked, oldest first
+                                                    (first use: the last 24 h); --peek leaves the cursor alone
+  feeds search QUERY [--category NAME] [--limit N]  full-text search over stored entries, newest first
+  feeds list                                        categories and their feeds
+  feeds add URL [--category NAME]                   subscribe (the category is created if missing)
+  feeds remove FEED                                 unsubscribe (FEED: id from `feeds list`, or the feed URL)
+  feeds filter FEED --block REGEX | --keep REGEX | --clear
+                                                    skip new entries whose title matches --block, or keep only
+                                                    those matching --keep (Go regex, e.g. "(?i)canary|nightly")
+  feeds --selftest
+
+Several profiles and VMs share one Miniflux account, so nothing is marked read there: each profile keeps its own
+cursor in $HERMES_HOME/feeds-cursor.json. Server: $MINIFLUX_URL (default http://127.0.0.1:8080). The API key is
+the sealed credential miniflux_api_key, decrypted per call and never printed."""
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+URL = os.environ.get("MINIFLUX_URL", "http://127.0.0.1:8080").rstrip("/")
+CURSOR = os.path.join(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"), "feeds-cursor.json")
+CRED = "/etc/credstore.encrypted/miniflux_api_key"
+
+
+def key():
+    r = subprocess.run(["sudo", "-n", "systemd-creds", "decrypt", CRED, "-"], capture_output=True, text=True)
+    if r.returncode or not r.stdout.strip():
+        sys.exit("feeds: the sealed credential miniflux_api_key is missing on this VM (the owner seals it)")
+    return r.stdout.strip()
+
+
+def api(path, data=None, method=None, _key=[]):
+    _key or _key.append(key())
+    req = urllib.request.Request(URL + "/v1" + path, data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"X-Auth-Token": _key[0], "Content-Type": "application/json"},
+                                 method=method or ("POST" if data is not None else "GET"))
+    try:
+        # 90 s: subscribing makes Miniflux fetch the feed first, and some sites (NSE) are slow
+        with urllib.request.urlopen(req, timeout=90) as r:
+            body = r.read()
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as e:
+        sys.exit(f"feeds: Miniflux said {e.code}: {e.read().decode(errors='replace')[:200]}")
+    except urllib.error.URLError as e:
+        sys.exit(f"feeds: can't reach Miniflux at {URL}: {e.reason}")
+    except TimeoutError:
+        sys.exit(f"feeds: Miniflux at {URL} didn't answer within 90 s (for add: the site may be slow; check `feeds list` before retrying)")
+
+
+def category_id(name, create=False):
+    for c in api("/categories"):
+        if c["title"].lower() == name.lower():
+            return c["id"]
+    if create:
+        return api("/categories", {"title": name})["id"]
+    sys.exit(f"feeds: no category named {name!r} (see: feeds list)")
+
+
+def feed(ref):
+    """A feed by id or by its feed URL."""
+    for f in api("/feeds"):
+        if str(f["id"]) == ref or f["feed_url"] == ref:
+            return f
+    sys.exit(f"feeds: no feed {ref!r} (see: feeds list)")
+
+
+def title_rules(regex, clear=False):
+    """Miniflux entry-filter rules matching titles; one rule per line."""
+    return "" if clear else f"EntryTitle={regex}"
+
+
+def text(s, n=300):
+    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    s = " ".join(s.split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def show(entries):
+    for e in entries:
+        when = (e.get("published_at") or "")[:16].replace("T", " ")
+        print(f"[{e['id']}] {when}  {e['feed']['title']} | {e['title']}\n  {e['url']}")
+        snippet = text(e.get("content"))
+        if snippet:
+            print(f"  {snippet}")
+
+
+def load_cursor():
+    try:
+        return json.load(open(CURSOR))
+    except (OSError, ValueError):
+        return {}
+
+
+def new_query(cursor, cat, limit, now):
+    """Query string for `new`: after the stored entry id, or the last 24 h on first use."""
+    q = {"order": "id", "direction": "asc", "limit": limit}
+    if cat is not None:
+        q["category_id"] = cat
+    if cursor:
+        q["after_entry_id"] = cursor
+    else:
+        q["published_after"] = int(now - 86400)
+    return q
+
+
+def opt(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        val = args[i + 1] if i + 1 < len(args) else sys.exit(f"feeds: {name} needs a value")
+        del args[i:i + 2]
+        return val
+    return default
+
+
+def main(args):
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    if args[0] == "--selftest":
+        return selftest()
+    cmd, args = args[0], args[1:]
+    cat_name, limit = opt(args, "--category"), int(opt(args, "--limit", "30"))
+    if cmd == "new":
+        peek = "--peek" in args
+        cat = category_id(cat_name) if cat_name else None
+        slot = (cat_name or "*").lower()
+        cursors = load_cursor()
+        d = api("/entries?" + urllib.parse.urlencode(new_query(cursors.get(slot), cat, limit, time.time())))
+        entries = d.get("entries") or []
+        show(entries)
+        more = (d.get("total") or 0) - len(entries)
+        print(f"-- {len(entries)} new" + (f", {more} more waiting (run again)" if more > 0 else ""))
+        if entries and not peek:
+            cursors[slot] = entries[-1]["id"]
+            tmp = CURSOR + ".tmp"
+            json.dump(cursors, open(tmp, "w"))
+            os.replace(tmp, CURSOR)
+    elif cmd == "search" and args:
+        q = {"search": " ".join(args), "order": "published_at", "direction": "desc", "limit": limit}
+        if cat_name:
+            q["category_id"] = category_id(cat_name)
+        d = api("/entries?" + urllib.parse.urlencode(q))
+        show(d.get("entries") or [])
+        print(f"-- {d.get('total', 0)} match(es)")
+    elif cmd == "list":
+        feeds = api("/feeds")
+        for c in sorted(api("/categories"), key=lambda c: c["title"].lower()):
+            print(c["title"])
+            for f in sorted((f for f in feeds if f["category"]["id"] == c["id"]), key=lambda f: f["title"].lower()):
+                err = f"  (failing: {f['parsing_error_message'][:80]})" if f.get("parsing_error_count") else ""
+                rules = " ".join(r for r in (f.get("block_filter_entry_rules") and "[block filter]",
+                                             f.get("keep_filter_entry_rules") and "[keep filter]") if r)
+                print(f"  {f['id']}: {f['title']} | {f['feed_url']}{' ' + rules if rules else ''}{err}")
+    elif cmd == "add" and len(args) == 1:
+        cat = category_id(cat_name or "General", create=True)
+        fid = api("/feeds", {"feed_url": args[0], "category_id": cat})["feed_id"]
+        print(f"subscribed: feed {fid} in {cat_name or 'General'}")
+    elif cmd == "remove" and len(args) == 1:
+        f = feed(args[0])
+        api(f"/feeds/{f['id']}", method="DELETE")
+        print(f"removed: feed {f['id']} ({f['title']}) and its stored entries")
+    elif cmd == "filter" and args:
+        f, block, keep = feed(args[0]), opt(args, "--block"), opt(args, "--keep")
+        clear = "--clear" in args
+        if not (block or keep or clear):
+            sys.exit("feeds: filter needs --block REGEX, --keep REGEX or --clear")
+        body = {"block_filter_entry_rules": title_rules(block, clear)} if block or clear else {}
+        if keep or clear:
+            body["keep_filter_entry_rules"] = title_rules(keep, clear)
+        api(f"/feeds/{f['id']}", body, method="PUT")
+        print(f"filter set on feed {f['id']} ({f['title']}): " + (", ".join(f"{k}={v!r}" for k, v in body.items())))
+    else:
+        sys.exit(__doc__)
+
+
+def selftest():
+    assert text("<p>Hi &amp; <b>bye</b></p>") == "Hi & bye"
+    assert text("x" * 400).endswith("…") and len(text("x" * 400)) == 300
+    q = new_query(None, None, 30, 100000)
+    assert q["published_after"] == 100000 - 86400 and "after_entry_id" not in q and "category_id" not in q
+    q = new_query(42, 7, 5, 0)
+    assert q["after_entry_id"] == 42 and q["category_id"] == 7 and q["limit"] == 5 and "published_after" not in q
+    args = ["x", "--limit", "5"]
+    assert opt(args, "--limit") == "5" and args == ["x"] and opt(args, "--category", "d") == "d"
+    assert title_rules("(?i)canary") == "EntryTitle=(?i)canary" and title_rules(None, clear=True) == ""
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
