@@ -32,11 +32,14 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
 2. Make a worktree on a fresh branch from the default branch:
    `git -C <repo> fetch -q origin && git -C <repo> worktree add <repo>-worktrees/issue-N -b issue-N-<short-slug> origin/main`.
    If the repo has no commits yet, the first ticket (the project skeleton) runs in the main checkout on `main`. Claude Code commits and pushes `main` directly, because there is nothing to open a PR against yet.
+   Otherwise open the PR as a draft now, before any code is written, so the work is visible from the start:
+   `git -C <worktree> commit -q --allow-empty -m "Start #N: <issue title>" && git -C <worktree> push -q -u origin issue-N-<slug> && gh pr create --draft --head issue-N-<slug> --title "<issue title>" --body "Closes #N"`.
+   Every later push updates this PR; it stays a draft until it is ready for approval and merging.
 3. Write the handoff prompt to `~/.local/state/claude-runs/<repo>-issue-N.prompt`. It contains:
    - the full issue text (`gh issue view N`)
    - "Work only in this directory, on branch `issue-N-<slug>`."
    - "Run the checks listed in the ticket and fix failures before finishing. No Android/Gradle builds unless the ticket asks for one."
-   - "Commit with clear messages, push the branch, and open a pull request with `gh pr create`, title from the issue, body starting `Closes #N`."
+   - "Commit with clear messages and push the branch. Its draft pull request already exists: don't open another one and don't mark it ready."
    - "Finish with a short summary: what changed, which checks ran and their results, anything left undone."
 4. Start Claude Code **in the background**. A coding run outlasts the foreground tool time limit:
    `terminal(command="cd <worktree> && claude -p \"$(cat ~/.local/state/claude-runs/<repo>-issue-N.prompt)\" --dangerously-skip-permissions --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1", background=true, notify_on_complete=true)`
@@ -45,6 +48,8 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
 6. Wait for the completion notice. Don't poll in a loop, and don't start anything else in the repo meanwhile.
 
 ## Requesting the owner's review
+
+Mark the PR ready first if it is still a draft (`gh pr ready <pr>`).
 
 When a PR needs the owner (your SOUL says so, for example a `human-signoff` PR, or they asked to see it):
 1. `gh pr edit <pr> --add-assignee example --add-label needs-owner-review`
@@ -58,7 +63,7 @@ When the run finishes, read the JSON: `is_error`, `result` (Claude Code's summar
 
 1. Find the PR: `gh pr list --head issue-N-<slug> --json number,url`. Read `gh pr view`, skim `gh pr diff`, and check `gh pr checks` if CI exists.
 2. Run the ticket's checks yourself in the worktree.
-3. **If it meets every acceptance criterion and the checks pass:** label `review` → merge with `gh pr merge <pr> --squash --delete-branch` (the issue closes through `Closes #N`), then `git -C <repo> worktree remove <worktree>` and `git -C <repo> pull -q`. Post one line: "#N merged: <one-sentence summary> (<PR link>)".
+3. **If it meets every acceptance criterion and the checks pass:** label `review` → `gh pr ready <pr>` (when your SOUL hands PRs to QA first, QA does this) → merge with `gh pr merge <pr> --squash --delete-branch` (the issue closes through `Closes #N`), then `git -C <repo> worktree remove <worktree>` and `git -C <repo> pull -q`. Post one line: "#N merged: <one-sentence summary> (<PR link>)".
 4. **If not:** send concrete feedback to the same Claude Code session, again in the background with `notify_on_complete`:
    `cd <worktree> && claude -r <session_id> -p "<what is wrong and what to change>" --dangerously-skip-permissions --max-turns 100 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N-r<k>.json 2>&1`
    Codex: `cd <worktree> && codex exec resume <session_id> --dangerously-bypass-approvals-and-sandbox --json -o ~/.local/state/claude-runs/<repo>-issue-N-r<k>.summary.txt "<what is wrong and what to change>" > ~/.local/state/claude-runs/<repo>-issue-N-r<k>.jsonl 2>&1`

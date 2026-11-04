@@ -29,7 +29,7 @@ QUERY = """query($owner:String!,$num:Int!,$after:String){organization(login:$own
  items(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isArchived
   fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
   content{__typename
-   ... on PullRequest{number state merged labels(first:30){nodes{name}} closingIssuesReferences(first:10){nodes{number}}}
+   ... on PullRequest{number state merged isDraft labels(first:30){nodes{name}} closingIssuesReferences(first:10){nodes{number}}}
    ... on Issue{number state}}}}}}}"""
 
 
@@ -46,6 +46,8 @@ def pr_lane(pr):
         return "Awaiting Human Approval"
     if labels & {"qa", "qa-passed"}:
         return "QA Review"
+    if pr.get("isDraft"):  # drafts are work in progress until QA marks them ready (a draft under QA shows as QA Review)
+        return "In Progress"
     return "In Review"
 
 
@@ -133,6 +135,8 @@ def selftest():
              item("j", pr(42, labels=("qa-passed", "human-signoff")), "QA Review"),
              item("k", pr(43), "")]
     got = {i: (cur, t) for i, cur, t, _ in plan(items)}
+    assert pr_lane({"isDraft": True, "labels": {"nodes": []}}) == "In Progress"
+    assert pr_lane({"isDraft": True, "labels": {"nodes": [{"name": "qa"}]}}) == "QA Review"
     assert got == {"a": ("Awaiting Human Approval", "QA Review"), "b": ("Backlog", "ARCHIVE"),
                    "d": ("Backlog", "QA Review"), "g": ("QA Review", "In Progress"),
                    "i": ("In Review", "Done"), "j": ("QA Review", "Awaiting Human Approval"),
