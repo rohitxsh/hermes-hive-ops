@@ -1,6 +1,6 @@
 """Queue a note whenever an agent starts waiting for its owner: a command approval, a question it asked,
 or a Kanban task blocked on a human. The "approval notify" cron job (every minute, no LLM) pings the
-owner in #assistant for anything still unanswered after a short grace period, so requests aren't lost
+owner in #assistant for anything still unanswered after 3 minutes, so requests aren't lost
 in a busy channel. Writes one small JSON line per event to ~/.hermes/approval-queue.jsonl (prompts are
 already redacted by Hermes)."""
 from __future__ import annotations
