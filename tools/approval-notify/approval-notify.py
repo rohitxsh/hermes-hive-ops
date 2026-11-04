@@ -15,7 +15,7 @@ import time
 
 QUEUE = os.path.expanduser("~/.hermes/approval-queue.jsonl")
 STATE = os.path.expanduser("~/.hermes/approval-notify-state.json")
-GRACE = 45          # seconds: answered this fast = no ping
+GRACE = 180         # seconds: answered within 3 minutes = no ping (owner, 2026-11-04)
 MAX_AGE = 21600     # older unanswered requests have timed out (approvals.timeout: 3 h, 6 h in auto mode)
 BUTTONS = 900       # Discord buttons expire after this (approvals.discord_prompt_timeout, Hermes max 900)
 KEEP = 86400        # queue lines kept this long
@@ -104,7 +104,7 @@ def main():
 def selftest():
     now = 10_000.0
     recs = [
-        {"event": "request", "id": "a", "kind": "approval", "at": now - 60, "profile": "jobs",
+        {"event": "request", "id": "a", "kind": "approval", "at": now - 200, "profile": "jobs",
          "session_key": "agent:jobs:discord:group:200000000000000001:100000000000000001", "prompt": "rm -rf build"},
         {"event": "request", "id": "b", "kind": "clarify", "at": now - 10, "profile": "project", "session_key": "x"},
         {"event": "request", "id": "c", "kind": "approval", "at": now - 90, "profile": "tools", "session_key": "y"},
