@@ -11,7 +11,7 @@
   renewals add --date DATE NAME [--note TEXT] | remove NAME | list
   attention pr-resume        scheduled every few minutes: unblocks a blocked Kanban card whose GitHub PR (full URL in the
                              card) was approved, merged, labelled `approved`, or approved in a comment by the owner
-                             (config github_owner) after the card was blocked; the agent then carries on by itself
+                             (config github_owner; unset: any human but the agents) after the card was blocked; the agent then carries on by itself
   attention --selftest
 State and lists: ~/agents/attention/ (state.json, followups.json, renewals.json, config.json). Tokens are read only in
 memory; only expiry dates are cached."""
@@ -331,12 +331,14 @@ def pr_verdict(d, since, owner, agents=()):
     if any((l.get("name") or "").lower() in ("approved", "owner-approved") for l in d.get("labels") or []):
         return True, "labelled approved"
     after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
+    bots = {a.lower() for a in agents}
     for c in (d.get("comments") or []) + (d.get("reviews") or []):
         who = ((c.get("author") or {}).get("login") or "").lower()
         when = c.get("createdAt") or c.get("submittedAt") or ""
-        if owner and who == owner.lower() and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
+        # no github_owner set: any human (not an agent login) may approve
+        approver = who == owner.lower() if owner else bool(who) and who not in bots
+        if approver and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
             return True, f"approved in a comment by {who}"
-    bots = {a.lower() for a in agents}
     for c in d.get("reviews") or []:
         who = ((c.get("author") or {}).get("login") or "").lower()
         if (c.get("submittedAt") or "") >= after and c.get("state") == "CHANGES_REQUESTED" and who not in bots:
@@ -499,6 +501,8 @@ def selftest():
     assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "rename this"}]}, since, "", ["example-owner"])[0] == "changes"
     assert pr_verdict({"comments": [{"author": {"login": "example-owner"}, "createdAt": "2026-11-02T11:00:00Z", "body": "status"}]}, since, "", ["example-owner"]) == (False, "waiting")
     assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "x"}]}, since, "") == (False, "waiting")
+    assert pr_verdict({"comments": [{"author": {"login": "reviewer-a"}, "createdAt": "2026-11-02T11:00:00Z", "body": "LGTM"}]}, since, "", ["example-owner"]) == (True, "approved in a comment by reviewer-a")
+    assert pr_verdict({"comments": [{"author": {"login": "example-owner"}, "createdAt": "2026-11-02T11:00:00Z", "body": "approved"}]}, since, "", ["example-owner"]) == (False, "waiting")
     pat = r"^\s*-\s"
     assert unanswered(["x — abc123 — y"], "## Resolved (1)\n| abc123 | x | [assistant: asked] q |\n") == []
     assert review_items(["# batch", "APPROVED 2026-11-01: all", "- a", "- b"], pat) == 0 and review_items(["- a", "- b"], pat) == 2
