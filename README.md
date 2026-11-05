@@ -2,7 +2,8 @@
 
 **Rohit's opinionated setup for [Hermes Agent](https://github.com/NousResearch/hermes-agent).** It turns a vanilla
 Hermes install into an always-on team of agents on a small Linux VM: several profiles behind one gateway (Discord),
-Kanban, scheduled maintenance, safer approvals, memory that learns, and fixes for problems hit in daily use.
+Kanban that repairs its own stuck cards, shared agent rules kept in one place (the `ops-core` plugin), scheduled
+maintenance, safer approvals, memory that learns, and fixes for problems hit in daily use.
 It is one way of running Hermes, not the only one. Everything here ran in production on Hermes **v0.22.6**.
 
 ## Quick start (from a vanilla Hermes install)
