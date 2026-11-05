@@ -42,10 +42,14 @@ check "SOUL unchanged by the second run" "cmp -s '$T/soul1' '$T/.hermes/SOUL.md'
 echo "== result"
 for p in "$T"/kit/patches/*-apply.py; do grep -q '"--check"' "$p" || continue
   check "patch $(basename "$p")" "(cd /tmp && '$V/bin/python' '$p' --check >/dev/null 2>&1)"; done
-for c in attention efficiency skill-review; do check "$c self-test" "$c --selftest >/dev/null 2>&1"; done
+for c in attention efficiency skill-review kanban-doctor pending-human; do check "$c self-test" "$c --selftest >/dev/null 2>&1"; done
+check "ops-core self-test" "python3 -I '$T/.hermes/plugins/ops-core/__init__.py' --selftest >/dev/null 2>&1"
+check "ops-core in every profile" "( for d in '$T/.hermes' '$T'/.hermes/profiles/*; do [ -f \"\$d/plugins/ops-core/__init__.py\" ] || exit 1; done )"
+check "shared SOUL rules applied" "hermes ops-rules check 2>/dev/null | grep -q 'would update 0 SOUL'"
+check "hermes ops runs a kit tool" "hermes ops doctor --selftest >/dev/null 2>&1"
 check "efficiency runs on an empty home" "efficiency --days 1 >/dev/null 2>&1"
 jobs=$(hermes cron list 2>&1 | grep -c "Name:")
-check "13 maintenance jobs created ($jobs)" "[ '$jobs' -ge 13 ]"
+check "14 maintenance jobs created ($jobs)" "[ '$jobs' -ge 14 ]"
 check "locked profile has no shared skills" "grep -q 'external_dirs: \[\]' '$T/.hermes/profiles/webonly/config.yaml'"
 check "self-check is silent" "[ -z \"\$(bash '$T/.hermes/scripts/agent-health.sh' 2>&1)\" ]"
 [ $fail = 0 ] && echo "All checks passed." || { echo "Some checks failed; logs were in $T (removed on exit; rerun with 'trap - EXIT' to keep them)."; }
