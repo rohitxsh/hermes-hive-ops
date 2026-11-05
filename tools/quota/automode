@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""automode on|off|status [profile]: switch a profile's auto mode. "project" switches the whole Project team.
+"""automode on|off|status [profile]: switch a profile's auto mode. A team name (a profile with <name>-* profiles, e.g. "project") switches the whole team.
 
 on:  writes <profile home>/auto-mode.json and creates (or resumes) the profile's hourly "Auto mode" job,
      which delivers to the profile's Discord channel. If quota doesn't allow work right now, the job stays
@@ -36,8 +36,8 @@ def hermes(*args):
 
 def team(profile):
     names = [n for n, _ in q.profiles()]
-    if profile == "project":
-        return [n for n in names if n == "project" or n.startswith("project-")]
+    if any(n.startswith(profile + "-") for n in names):   # a team: the PM profile plus its <name>-* roles
+        return [n for n in names if n == profile or n.startswith(profile + "-")]
     return [profile]
 
 

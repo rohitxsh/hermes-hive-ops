@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import math
+import os
 from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
@@ -58,7 +59,9 @@ def main():
         readings = [("Codex", codex.result()), ("Claude", claude.result())]
     now = datetime.now(timezone.utc)
     stamp = now.astimezone().strftime("%d %b %Y, %H:%M %Z")
-    print(f"**Account usage — {stamp}**")
+    # USAGE_POST_SILENT=1: Discord "@silent" message (visible, no push or sound; needs the team-notification patch).
+    # It shares the heading line: alone on line 1, cron would read it as [SILENT] and post nothing.
+    print(("@silent " if os.environ.get("USAGE_POST_SILENT") == "1" else "") + f"**Account usage — {stamp}**")
     for name, windows in readings:
         labels = [("weekly", "weekly")] if name == "Codex" else [("5h", "5-hour"), ("weekly", "weekly")]
         for title, label in labels:

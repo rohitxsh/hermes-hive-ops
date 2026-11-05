@@ -43,6 +43,5 @@ Use the isolated interpreter, not Hermes's Python. Prefer `MarkItDown(enable_plu
 
 ## Verification and Maintenance
 - `terminal(command="markitdown --version", timeout=30)` checks the command.
-- `terminal(command="~/.local/share/uv/tools/markitdown/bin/python ~/agents/src/markitdown/selftest.py", timeout=180)` exercises local HTML, CSV, PDF, DOCX, XLSX and PPTX conversion without cloud calls.
 - Shared source: `~/agents/shared-skills/productivity/markitdown/` through existing `skills.external_dirs`; no per-profile copies or config changes are needed.
 - Admin upgrades use `~/.hermes/tools/uv-0.13.5-linux-x64/uv tool upgrade markitdown`; record the change and rerun tests. Rollback/removal uses that binary's `tool uninstall markitdown`, then retire this shared skill. No gateway restart is needed for the CLI.

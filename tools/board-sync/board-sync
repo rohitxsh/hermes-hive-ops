@@ -1,151 +1,567 @@
 #!/usr/bin/python3
-"""board-sync (2026-11-02): keep a GitHub Projects (v2) board's Status in step with PR and issue state, no model calls.
+"""board-sync (2026-11-05): keep a GitHub Projects (v2) board's Status in step with PR and issue state, no model calls.
 
-  board-sync [--dry-run]     one pass; prints only what it changed (silent when nothing did)
+  board-sync              one pass; prints only what it changed (silent when nothing did); diagnostics on stderr
+  board-sync --dry-run    read-only: GraphQL queries only, lists proposed moves, never writes
   board-sync --selftest
 
-Config ~/agents/board-sync/config.json: {"owner": "ORG", "project": 2, "repo": "ORG/REPO"}. Uses the gh wrapper (the
-sealed machine-user token). Lanes follow the progression Backlog -> Ready -> In Progress -> In Review -> CI -> QA Review
--> Awaiting Human Approval (high-risk only) -> Done, where Done means merged and closing something never implies Done:
-  PR merged -> Done; PR closed without merging -> archived from the board (restorable; obsolete work is not delivered);
-  open PR by label: changes-requested -> In Progress; qa-passed with human-signoff -> Awaiting Human Approval;
-  qa-passed or qa -> QA Review (human-signoff alone, before QA passes, stays in QA Review); otherwise In Review;
-  an issue that an open PR closes (Closes #N) follows that PR's lane; an issue closed by a merged PR -> Done;
-  other closed issues are left alone.
-Only items in an automatic lane (Backlog, Ready, In Progress, In Review, QA Review, Awaiting Human Approval, or none)
-move; Blocked, Paused, Deferred, Needs Clarification, CI and Done are set on purpose and never overridden."""
+Config ~/agents/board-sync/config.json (uses the gh wrapper):
+  owner           GitHub organization that owns the project (required)
+  project         project number (required)
+  repo            "ORG/REPO" whose PRs and issues the board tracks (required)
+  qa_acceptances  QA certificate file; default ~/agents/board-sync/qa-acceptances.json (absent = no acceptances)
+  lanes           rename lanes to match your board, e.g. {"approval": "Needs Sign-off"}; roles and defaults:
+                  backlog "Backlog", ready "Ready", in_progress "In Progress", in_review "In Review",
+                  qa_review "QA Review", approval "Awaiting Human Approval", done "Done"
+Lanes for an open PR: label changes-requested -> in_progress; qa-passed + human-signoff + a valid QA certificate ->
+approval; qa, qa-passed or human-signoff -> qa_review; draft -> in_progress; otherwise in_review. Merged -> done;
+closed without merging -> archived (restorable). An issue follows the least-advanced lane of its open linked PRs and
+goes to done only when closed with a merged PR. Only automatic lanes (none, backlog, ready, in_progress, in_review,
+qa_review, approval) move; done and any other lane (Blocked, Paused, CI, custom...) is held.
+QA certificate: labels alone never prove acceptance. The approval lane needs an entry in the qa_acceptances file
+(format: qa-acceptances.example.json beside this script) bound to the live PR head/base, to the board's text fields
+"QA Candidate SHA" (= live head) and "QA Evidence" (= review URL), and to a submitted, undismissed review on that head
+whose body sha256 is pinned. Fails closed: any malformed, truncated or inconsistent GraphQL page, registry or config
+aborts before any write, and each move is re-planned from fresh data and read back after writing."""
+import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
 H = os.path.expanduser("~")
 GH = f"{H}/.local/bin/gh"
 CFG = f"{H}/agents/board-sync/config.json"
-AUTO = {"", "Backlog", "Ready", "In Progress", "In Review", "QA Review", "Awaiting Human Approval"}
+REGISTRY = f"{H}/agents/board-sync/qa-acceptances.json"  # not beside the script: the installer replaces that folder
+LANES = {"backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress", "in_review": "In Review",
+         "qa_review": "QA Review", "approval": "Awaiting Human Approval", "done": "Done"}  # role -> board name
+auto = lambda: {""} | {v for k, v in LANES.items() if k != "done"}
+rank = lambda: {LANES[k]: i for i, k in enumerate(("in_progress", "in_review", "qa_review", "approval"))}
+SHA40, SHA64 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
+REVIEW_STATES = {"PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+ENTRY_KEYS = {"repository", "pr_number", "head_sha", "base_ref", "base_sha", "review_url", "review_id",
+              "review_body_sha256", "verdict"}
 
-QUERY = """query($owner:String!,$num:Int!,$after:String){organization(login:$owner){projectV2(number:$num){id
- field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name}}}
- items(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isArchived
-  fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
-  content{__typename
-   ... on PullRequest{number state merged isDraft labels(first:30){nodes{name}} closingIssuesReferences(first:10){nodes{number}}}
-   ... on Issue{number state}}}}}}}"""
-
-
-def pr_lane(pr):
-    """Board lane for a PR from its state and labels; "ARCHIVE" for closed-unmerged."""
-    if pr.get("merged"):
-        return "Done"
-    if pr.get("state") == "CLOSED":
-        return "ARCHIVE"
-    labels = {l["name"] for l in (pr.get("labels") or {}).get("nodes", [])}
-    if "changes-requested" in labels:
-        return "In Progress"
-    if "qa-passed" in labels and "human-signoff" in labels:
-        return "Awaiting Human Approval"
-    if labels & {"qa", "qa-passed"}:
-        return "QA Review"
-    if pr.get("isDraft"):  # drafts are work in progress until QA marks them ready (a draft under QA shows as QA Review)
-        return "In Progress"
-    return "In Review"
-
-
-def plan(items):
-    """[(item_id, current, target)] for items that should move. Pure: unit-tested."""
-    issue_lane = {}
-    for it in items:
-        c = it.get("content") or {}
-        if c.get("__typename") == "PullRequest" and (c.get("state") == "OPEN" or c.get("merged")):
-            for ref in (c.get("closingIssuesReferences") or {}).get("nodes", []):
-                issue_lane[ref["number"]] = pr_lane(c)
-    out = []
-    for it in items:
-        if it.get("isArchived"):
-            continue
-        c = it.get("content") or {}
-        cur = (it.get("fieldValueByName") or {}).get("name") or ""
-        kind = c.get("__typename")
-        if kind == "PullRequest":
-            target = pr_lane(c)
-        elif kind == "Issue":
-            target = issue_lane.get(c.get("number"))
-            if c.get("state") == "CLOSED" and target != "Done":
-                target = None  # closed without a merged PR: never implies Done
-        else:
-            target = None
-        if target and target != cur and cur in AUTO:
-            out.append((it["id"], cur, target, f"{'PR' if kind == 'PullRequest' else 'issue'} #{c.get('number')}"))
-    return out
+PAGE = "totalCount pageInfo{hasNextPage endCursor}"
+CONN = {"labels": "labels(first:100%s){%s nodes{name}}",
+        "closingIssuesReferences": "closingIssuesReferences(first:100%s){%s nodes{number state repository{nameWithOwner}}}",
+        "closedByPullRequestsReferences":
+            "closedByPullRequestsReferences(first:100,includeClosedPrs:true%s){%s nodes{number repository{nameWithOwner}}}"}
+OWNER_OF = {"labels": "PullRequest", "closingIssuesReferences": "PullRequest", "closedByPullRequestsReferences": "Issue"}
+first = lambda c: CONN[c] % ("", PAGE)
+ITEMS_Q = f"""query Items($owner:String!,$num:Int!,$after:String){{organization(login:$owner){{projectV2(number:$num){{id
+ field(name:"Status"){{... on ProjectV2SingleSelectField{{id options{{id name}}}}}}
+ items(first:100,after:$after){{{PAGE} nodes{{id isArchived
+  status:fieldValueByName(name:"Status"){{... on ProjectV2ItemFieldSingleSelectValue{{name}}}}
+  qaSha:fieldValueByName(name:"QA Candidate SHA"){{... on ProjectV2ItemFieldTextValue{{text}}}}
+  qaEvidence:fieldValueByName(name:"QA Evidence"){{... on ProjectV2ItemFieldTextValue{{text}}}}
+  content{{__typename
+   ... on PullRequest{{id number state merged isDraft headRefOid baseRefName baseRefOid repository{{nameWithOwner}}
+    {first("labels")} {first("closingIssuesReferences")}}}
+   ... on Issue{{id number state repository{{nameWithOwner}} {first("closedByPullRequestsReferences")}}}}}}}}}}}}}}}"""
+NESTED_Q = "query Nested($id:ID!,$after:String){node(id:$id){... on %s{%s}}}"
+REVIEWS_Q = f"""query Reviews($owner:String!,$name:String!,$num:Int!,$after:String){{repository(owner:$owner,name:$name){{
+ pullRequest(number:$num){{reviews(first:100,after:$after){{{PAGE} nodes{{id databaseId state body url submittedAt commit{{oid}}}}}}}}}}}}"""
+ITEM_Q = """query Item($id:ID!){node(id:$id){... on ProjectV2Item{id isArchived
+ status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}"""
 
 
-def gh(*args, inp=None):
-    r = subprocess.run([GH, *args], capture_output=True, text=True, input=inp, timeout=120)
+class Fail(Exception):
+    """Fail closed: incomplete/inconsistent data; abort before any (further) mutation."""
+
+
+def gh_run(args):
+    r = subprocess.run([GH, *args], capture_output=True, text=True, timeout=120)
     if r.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:200]}")
+        raise Fail(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:300]}")
     return r.stdout
 
 
-def fetch(owner, num):
-    items, after, proj = [], None, None
+def read_only(args):
+    """Only `gh api graphql -f query=query ...` with -f/-F variables; everything else may write."""
+    if args[:3] != ["api", "graphql", "-f"] or len(args) % 2:
+        return False
+    q = args[3]
+    flags_ok = all(f in ("-f", "-F") and not v.startswith("query=") for f, v in zip(args[4::2], args[5::2]))
+    return flags_ok and re.match(r"query=\s*query\b", q) is not None and "mutation" not in q
+
+
+class Api:
+    """Transport boundary: every gh call goes through here; dry-run denies all non-read-only argv."""
+
+    def __init__(self, run=gh_run, dry=False):
+        self.run, self.dry = run, dry
+
+    def __call__(self, *args):
+        if self.dry and not read_only(list(args)):
+            raise PermissionError(f"dry-run forbids gh {' '.join(args[:2])}")
+        return self.run(list(args))
+
+    def gql(self, query, **v):
+        args = ["api", "graphql", "-f", f"query={query}"]
+        for k, val in v.items():
+            if val is not None:
+                args += ["-F" if isinstance(val, int) else "-f", f"{k}={val}"]
+        try:
+            r = json.loads(self(*args))
+        except ValueError:
+            raise Fail("GraphQL response is not JSON")
+        if not isinstance(r, dict) or r.get("errors") or not isinstance(r.get("data"), dict):
+            raise Fail(f"GraphQL errors: {str(r.get('errors') if isinstance(r, dict) else r)[:300]}")
+        return r["data"]
+
+
+def pages(conn, more, what, key):
+    """Drain a cursor connection; fail closed on missing pageInfo, stalled cursor, duplicates or truncation."""
+    nodes, seen_cur, seen_key, total = [], set(), set(), None
     while True:
-        args = ["api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"num={num}"]
-        if after:
-            args += ["-f", f"after={after}"]
-        p = json.loads(gh(*args))["data"]["organization"]["projectV2"]
-        proj = proj or p
-        items += p["items"]["nodes"]
-        if not p["items"]["pageInfo"]["hasNextPage"]:
-            return proj, items
-        after = p["items"]["pageInfo"]["endCursor"]
+        if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list) or not isinstance(conn.get("pageInfo"), dict):
+            raise Fail(f"{what}: missing connection/pageInfo")
+        if not isinstance(conn.get("totalCount"), int) or total not in (None, conn["totalCount"]):
+            raise Fail(f"{what}: missing or changing totalCount")
+        total = conn["totalCount"]
+        for n in conn["nodes"]:
+            k = key(n) if isinstance(n, dict) else None
+            if k is None or k in seen_key:
+                raise Fail(f"{what}: null or duplicate node {k}")
+            seen_key.add(k)
+            nodes.append(n)
+        nxt, cur = conn["pageInfo"].get("hasNextPage"), conn["pageInfo"].get("endCursor")
+        if nxt is False:
+            break
+        if nxt is not True or not isinstance(cur, str) or cur in seen_cur:
+            raise Fail(f"{what}: cursor did not progress")
+        seen_cur.add(cur)
+        conn = more(cur)
+    if len(nodes) != total:
+        raise Fail(f"{what}: truncated ({len(nodes)} of {total})")
+    return nodes
 
 
-def main(dry):
-    cfg = json.load(open(CFG))
-    proj, items = fetch(cfg["owner"], int(cfg["project"]))
-    opts = {o["name"]: o["id"] for o in proj["field"]["options"]}
-    for item_id, cur, target, label in plan(items):
-        if dry:
-            print(f"would move {label}: {cur or '(none)'} -> {target}")
+def ident(n):
+    repo, num = (n.get("repository") or {}).get("nameWithOwner"), n.get("number")
+    if not isinstance(repo, str) or "/" not in repo or type(num) is not int:
+        raise Fail(f"null repository/number in {n}")
+    return repo, num
+
+
+def need(ok, what):
+    if not ok:
+        raise Fail(what)
+
+
+def nested(api, c, name, what):
+    q = NESTED_Q % (OWNER_OF[name], CONN[name] % (",after:$after", PAGE))
+    more = lambda cur: (api.gql(q, id=c["id"], after=cur).get("node") or {}).get(name)
+    key = (lambda n: n.get("name")) if name == "labels" else ident
+    return pages(c.get(name), more, f"{what} {name}", key)
+
+
+def text(n, alias, field):
+    """Field alias must be present: explicit null = no value; otherwise {field: str}. Omitted/malformed fails closed."""
+    need(alias in n, f"item {n['id']}: field alias {alias} omitted")
+    v = n[alias]
+    if v is None:
+        return None
+    need(isinstance(v, dict) and isinstance(v.get(field), str) and (field != "name" or v[field]),
+         f"item {n['id']}: malformed {alias} value {v!r}")
+    return v[field] or None  # empty text field = absent
+
+
+def norm_item(api, n):
+    """Flatten one project item; every identity/state field the planner relies on must be present."""
+    need(isinstance(n.get("id"), str) and isinstance(n.get("isArchived"), bool), f"item without id/isArchived: {n}")
+    c = n.get("content")
+    need(isinstance(c, dict) and isinstance(c.get("__typename"), str), f"item {n['id']}: null content")
+    it = {"id": n["id"], "archived": n["isArchived"], "status": text(n, "status", "name") or "",
+          "qa_sha": text(n, "qaSha", "text"), "qa_ev": text(n, "qaEvidence", "text"), "kind": c["__typename"]}
+    if it["kind"] not in ("PullRequest", "Issue"):
+        return it  # draft issues etc. are never moved
+    repo, num = ident(c)
+    what = f"{'PR' if it['kind'] == 'PullRequest' else 'issue'} {repo}#{num} (item {n['id']})"
+    need(isinstance(c.get("id"), str), f"{what}: null node id")
+    it.update(repo=repo, number=num, state=c.get("state"), what=what)
+    if it["kind"] == "Issue":
+        need(it["state"] in ("OPEN", "CLOSED"), f"{what}: bad state")
+        it["linked"] = sorted(ident(r) for r in nested(api, c, "closedByPullRequestsReferences", what))
+        return it
+    need(it["state"] in ("OPEN", "CLOSED", "MERGED") and isinstance(c.get("merged"), bool)
+         and c["merged"] == (it["state"] == "MERGED") and isinstance(c.get("isDraft"), bool)
+         and SHA40.fullmatch(str(c.get("headRefOid"))) and SHA40.fullmatch(str(c.get("baseRefOid")))
+         and isinstance(c.get("baseRefName"), str) and c["baseRefName"], f"{what}: missing state/draft/head/base")
+    it.update(merged=c["merged"], draft=c["isDraft"], head=c["headRefOid"], base_ref=c["baseRefName"],
+              base_sha=c["baseRefOid"])
+    labels = nested(api, c, "labels", what)
+    need(all(isinstance(l["name"], str) for l in labels), f"{what}: bad label")
+    it["labels"] = sorted(l["name"] for l in labels)
+    it["closes"] = sorted(ident(r) for r in nested(api, c, "closingIssuesReferences", what))
+    return it
+
+
+def collect(api, owner, num):
+    def page(after):
+        p = (api.gql(ITEMS_Q, owner=owner, num=num, after=after).get("organization") or {}).get("projectV2")
+        need(isinstance(p, dict), f"project {owner}/{num} not found")
+        return p
+    proj = page(None)
+    f = proj.get("field") or {}
+    need(isinstance(proj.get("id"), str) and isinstance(f.get("id"), str) and isinstance(f.get("options"), list),
+         "project Status field missing")
+    raw = pages(proj.get("items"), lambda cur: page(cur).get("items"), "project items", lambda n: n.get("id"))
+    items = [norm_item(api, n) for n in raw]
+    keys = [(i["kind"], i["repo"], i["number"]) for i in items if "repo" in i]
+    need(len(keys) == len(set(keys)), "same PR/issue appears on more than one project item")
+    return proj, items
+
+
+def load_registry(path):
+    """{(repository, pr_number): entry}; absent file = no acceptances; anything malformed or ambiguous fails closed."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return {}
+
+    def nodup(pairs):
+        need(len({k for k, _ in pairs}) == len(pairs), "registry: duplicate JSON key")
+        return dict(pairs)
+    try:
+        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=nodup)
+    except (ValueError, UnicodeDecodeError) as e:
+        raise Fail(f"registry: invalid JSON: {e}")
+    need(isinstance(doc, dict) and set(doc) == {"version", "entries"} and type(doc["version"]) is int
+         and doc["version"] == 1 and isinstance(doc["entries"], list), "registry: not a v1 document")
+    out, ids = {}, set()
+    for i, e in enumerate(doc["entries"]):
+        ok = (isinstance(e, dict) and set(e) == ENTRY_KEYS and isinstance(e["repository"], str)
+              and re.fullmatch(r"[\w.-]+/[\w.-]+", e["repository"]) and type(e["pr_number"]) is int and e["pr_number"] > 0
+              and type(e["review_id"]) is int and e["review_id"] > 0 and isinstance(e["base_ref"], str) and e["base_ref"]
+              and all(isinstance(e[k], str) and SHA40.fullmatch(e[k]) for k in ("head_sha", "base_sha"))
+              and isinstance(e["review_body_sha256"], str) and SHA64.fullmatch(e["review_body_sha256"])
+              and e["verdict"] == "accepted" and e["review_url"] ==
+              f"https://github.com/{e['repository']}/pull/{e['pr_number']}#pullrequestreview-{e['review_id']}")
+        need(ok, f"registry: entry {i} invalid")
+        k = (e["repository"], e["pr_number"])
+        need(k not in out and e["review_id"] not in ids, f"registry: duplicate/ambiguous entry {i} for {k}")
+        out[k], _ = e, ids.add(e["review_id"])
+    return out
+
+
+def validate(api, p, reg):
+    """(evidence tuple, None) when p carries an independently certified acceptance for its live head; else (None, why)."""
+    e = reg.get((p["repo"], p["number"]))
+    if not e:
+        return None, "no registry certificate"
+    if (e["head_sha"], e["base_ref"], e["base_sha"]) != (p["head"], p["base_ref"], p["base_sha"]):
+        return None, "registry head/base binding does not match live PR"
+    if p["qa_sha"] != p["head"]:
+        return None, "QA Candidate SHA field is not the live head"
+    if p["qa_ev"] != e["review_url"]:
+        return None, "QA Evidence field is not the certified review URL"
+    owner, name = p["repo"].split("/")
+    q = lambda cur: ((api.gql(REVIEWS_Q, owner=owner, name=name, num=p["number"], after=cur).get("repository") or {})
+                     .get("pullRequest") or {}).get("reviews")
+    revs = pages(q(None), q, f"{p['what']} reviews", lambda r: r.get("id"))
+    if not all(review_ok(r) for r in revs) or len({r["databaseId"] for r in revs}) != len(revs):
+        return None, "malformed, unknown-state or duplicate review in collection"
+    if any(r["state"] == "PENDING" for r in revs):
+        return None, "PENDING review present; review collection not settled"
+    if any(r["state"] == "CHANGES_REQUESTED" for r in revs):
+        return None, "unresolved CHANGES_REQUESTED review"
+    m = [r for r in revs if r["databaseId"] == e["review_id"]]
+    if len(m) != 1:
+        return None, "certified review not found exactly once"
+    r = m[0]
+    if r["state"] not in ("COMMENTED", "APPROVED") or not r.get("submittedAt"):
+        return None, f"certified review is {r['state']}/unsubmitted"
+    if r.get("url") != e["review_url"] or (r.get("commit") or {}).get("oid") != p["head"]:
+        return None, "certified review URL/commit does not match live head"
+    if not isinstance(r.get("body"), str) or hashlib.sha256(r["body"].encode("utf-8")).hexdigest() != e["review_body_sha256"]:
+        return None, "certified review body changed"
+    return (p["head"], e["review_url"]), None
+
+
+def review_ok(r):
+    """Every review must be complete; submitted ones need body, url, submittedAt and a full commit oid."""
+    if not (isinstance(r.get("id"), str) and type(r.get("databaseId")) is int and r.get("state") in REVIEW_STATES):
+        return False
+    return r["state"] == "PENDING" or (isinstance(r.get("body"), str) and isinstance(r.get("url"), str)
+                                      and isinstance(r.get("submittedAt"), str) and r["submittedAt"]
+                                      and SHA40.fullmatch(str((r.get("commit") or {}).get("oid"))) is not None)
+
+
+def pr_lane(p, accept):
+    if p["merged"]:
+        return LANES["done"]
+    if p["state"] == "CLOSED":
+        return "ARCHIVE"
+    labels = set(p["labels"])
+    if "changes-requested" in labels:
+        return LANES["in_progress"]
+    if {"qa-passed", "human-signoff"} <= labels and accept(p):
+        return LANES["approval"]
+    if labels & {"qa", "qa-passed", "human-signoff"}:
+        return LANES["qa_review"]
+    if p["draft"]:  # drafts are work in progress until QA marks them ready (a draft under QA shows as QA Review)
+        return LANES["in_progress"]
+    return LANES["in_review"]
+
+
+def issue_lane(it, prs, repo, accept):
+    """(target, deps, diagnostic) for an issue from ALL its linked PRs; incomplete scope never moves it."""
+    me = (it["repo"], it["number"])
+    linked = sorted(set(it["linked"]) | {k for k, p in prs.items() if me in p["closes"]})
+    if not linked:
+        return None, [], None
+    missing = [f"{r}#{n}" for r, n in linked if r != repo or (r, n) not in prs]
+    if missing:
+        return None, [], f"{it['what']}: linked PR scope incomplete (off-project/off-repo {', '.join(missing)}); not moved"
+    deps = [prs[k] for k in linked]
+    open_ = [p for p in deps if p["state"] == "OPEN"]
+    if open_ and it["state"] == "CLOSED":
+        return None, deps, f"reconciliation: {it['what']} is closed but linked PR(s) still open; no completion"
+    if open_:
+        target = min((pr_lane(p, accept) for p in open_), key=rank().get)
+        if target == LANES["approval"]:
+            ev = {accept(p) for p in open_}
+            if len(ev) != 1:
+                return LANES["qa_review"], deps, f"{it['what']}: several distinct accepted evidence tuples; held at qa_review"
+            if (it["qa_sha"], it["qa_ev"]) != ev.pop():
+                why = f"{it['what']}: QA fields disagree with validated PR acceptance; held at qa_review"
+                return LANES["qa_review"], deps, why
+        return target, deps, None
+    if any(p["merged"] for p in deps):
+        if it["state"] == "CLOSED":
+            return LANES["done"], deps, None
+        return None, deps, f"reconciliation: {it['what']} is open with only merged linked PRs; not Done"
+    return None, deps, None
+
+
+def plan(items, repo, accept):
+    """[move], [diagnostic]. A move records the item and every dependency snapshot it was derived from."""
+    prs = {(i["repo"], i["number"]): i for i in items if i["kind"] == "PullRequest"}
+    moves, diags = [], []
+    for it in items:
+        if it["kind"] not in ("PullRequest", "Issue") or it["archived"]:
             continue
-        if target == "ARCHIVE":
-            gh("project", "item-archive", str(cfg["project"]), "--owner", cfg["owner"], "--id", item_id)
-            print(f"archived {label} (closed without merging; was {cur or 'no status'})")
-        elif target in opts:
-            gh("project", "item-edit", "--project-id", proj["id"], "--id", item_id,
-               "--field-id", proj["field"]["id"], "--single-select-option-id", opts[target])
-            print(f"moved {label}: {cur or '(none)'} -> {target}")
+        cur = it["status"]
+        if cur not in auto():  # protected lane: precedes all movement and archiving
+            pr_ = it["kind"] == "PullRequest"
+            if pr_ and it["state"] == "CLOSED":
+                diags.append(f"reconciliation: {it['what']} closed without merging but held in {cur}; not archived")
+            shown = [x for x, on in (("acceptance labels", pr_ and {"qa-passed", "human-signoff"} <= set(it["labels"])),
+                                     ("QA fields", it["qa_sha"] or it["qa_ev"])) if on]
+            if shown:  # report only: protected lanes bypass validation, so these indicators prove nothing
+                diags.append(f"reconciliation: {it['what']} in protected {cur} carries QA {'/'.join(shown)}; "
+                             "not validated (protected lane is never revalidated or moved)")
+            continue
+        if it["kind"] == "PullRequest":
+            target, deps, why = pr_lane(it, accept), [], None
+        else:
+            target, deps, why = issue_lane(it, prs, repo, accept)
+        if why:
+            diags.append(why)
+        if target and target != cur:
+            moves.append({"id": it["id"], "cur": cur, "target": target, "what": it["what"], "item": it, "deps": deps,
+                          "accept": [accept(p) for p in [it] + deps if p["kind"] == "PullRequest" and p["state"] == "OPEN"
+                                     and {"qa-passed", "human-signoff"} <= set(p["labels"])]})
+    return moves, diags
+
+
+def snapshot(api, cfg, registry, diags):
+    proj, items = collect(api, cfg["owner"], int(cfg["project"]))
+    reg = load_registry(registry)  # read after collection: as close to the mutation as possible
+    memo = {}
+
+    def accept(p):
+        if p["id"] not in memo:
+            memo[p["id"]], why = validate(api, p, reg)
+            if why:
+                diags.append(f"{p['what']}: QA acceptance not validated: {why}")
+        return memo[p["id"]]
+    moves, d = plan(items, cfg["repo"], accept)
+    diags += d
+    return proj, moves
+
+
+def sync(api, cfg, registry, dry, out=print, err=lambda s: print(s, file=sys.stderr)):
+    diags = []
+    try:
+        proj, moves = snapshot(api, cfg, registry, diags)
+    except Fail as e:
+        err(f"board-sync: aborted before any mutation (fail closed): {e}")
+        return 1
+    for d in dict.fromkeys(diags):
+        err(d)
+    if dry:
+        for m in moves:
+            out(f"would {'archive' if m['target'] == 'ARCHIVE' else 'move'} {m['what']}: {m['cur'] or '(none)'} -> {m['target']}")
+        return 0
+    opts = {o.get("name"): o.get("id") for o in proj["field"]["options"]}
+    failed = 0
+    for m in moves:
+        try:
+            _, fresh = snapshot(api, cfg, registry, [])  # re-read registry, target and every dependency
+            if m not in fresh:
+                err(f"skipped {m['what']}: source, registry or target changed since plan")
+                continue
+            if m["target"] == "ARCHIVE":
+                api("project", "item-archive", str(cfg["project"]), "--owner", cfg["owner"], "--id", m["id"])
+            elif opts.get(m["target"]):
+                api("project", "item-edit", "--project-id", proj["id"], "--id", m["id"], "--field-id", proj["field"]["id"],
+                    "--single-select-option-id", opts[m["target"]])
+            else:
+                err(f"skipped {m['what']}: board has no Status option {m['target']!r}")
+                failed += 1
+                continue
+            n = api.gql(ITEM_Q, id=m["id"]).get("node") or {}
+            ok = n.get("isArchived") is True if m["target"] == "ARCHIVE" else (
+                n.get("isArchived") is False and (n.get("status") or {}).get("name") == m["target"])
+        except Fail as e:
+            err(f"board-sync: stopped at {m['what']} (fail closed): {e}")
+            return 1
+        if not ok:
+            err(f"verification failed for {m['what']}: read back {n}")
+            failed += 1
+        elif m["target"] == "ARCHIVE":
+            out(f"archived {m['what']} (closed without merging; was {m['cur'] or 'no status'})")
+        else:
+            out(f"moved {m['what']}: {m['cur'] or '(none)'} -> {m['target']}")
+    return 1 if failed else 0
 
 
 def selftest():
-    pr = lambda n, st="OPEN", merged=False, labels=(), closes=(): {"__typename": "PullRequest", "number": n, "state": st,
-        "merged": merged, "labels": {"nodes": [{"name": l} for l in labels]},
-        "closingIssuesReferences": {"nodes": [{"number": c} for c in closes]}}
-    item = lambda i, content, status="": {"id": i, "isArchived": False, "content": content,
-        "fieldValueByName": {"name": status} if status else None}
-    items = [item("a", pr(33, labels=("qa", "human-signoff", "risk:high"), closes=(34,)), "Awaiting Human Approval"),
-             item("b", pr(29, st="CLOSED"), "Backlog"),
-             item("c", pr(27, st="MERGED", merged=True, closes=(26,)), "Done"),
-             item("d", {"__typename": "Issue", "number": 34, "state": "OPEN"}, "Backlog"),
-             item("e", pr(40, labels=("qa",)), "Blocked"),
-             item("f", {"__typename": "Issue", "number": 3, "state": "OPEN"}, "Blocked"),
-             item("g", pr(41, labels=("qa", "changes-requested")), "QA Review"),
-             item("h", {"__typename": "Issue", "number": 9, "state": "CLOSED"}, "Ready"),
-             item("i", {"__typename": "Issue", "number": 26, "state": "CLOSED"}, "In Review"),
-             item("j", pr(42, labels=("qa-passed", "human-signoff")), "QA Review"),
-             item("k", pr(43), "")]
-    got = {i: (cur, t) for i, cur, t, _ in plan(items)}
-    assert pr_lane({"isDraft": True, "labels": {"nodes": []}}) == "In Progress"
-    assert pr_lane({"isDraft": True, "labels": {"nodes": [{"name": "qa"}]}}) == "QA Review"
-    assert got == {"a": ("Awaiting Human Approval", "QA Review"), "b": ("Backlog", "ARCHIVE"),
-                   "d": ("Backlog", "QA Review"), "g": ("QA Review", "In Progress"),
-                   "i": ("In Review", "Done"), "j": ("QA Review", "Awaiting Human Approval"),
-                   "k": ("", "In Review")}, got
+    def p(n, labels=(), **kw):
+        d = {"id": f"p{n}", "kind": "PullRequest", "archived": False, "status": "QA Review", "repo": "o/r", "number": n,
+             "state": "OPEN", "merged": False, "draft": False, "labels": list(labels), "closes": [], "head": "a" * 40,
+             "base_ref": "main", "base_sha": "b" * 40, "qa_sha": None, "qa_ev": None, "what": f"PR o/r#{n}"}
+        d.update(kw)
+        return d
+    ok_ = ("qa-passed", "human-signoff")
+    items = [p(1, ok_), p(2, ok_, status="Awaiting Human Approval"), p(3, ok_, status="Blocked"),
+             p(4, state="CLOSED", status="Ready"), p(5, draft=True, labels=("qa",)), p(6, state="CLOSED", status="Done"),
+             p(7, draft=True), p(8, ("qa", "changes-requested")), p(9, ok_ + ("changes-requested",)), p(10, ok_)]
+    moves, diags = plan(items, "o/r", lambda pr: ("a" * 40, "u") if pr["number"] in (2, 9, 10) else None)
+    got = {m["id"]: m["target"] for m in moves}
+    # p1: QA labels but no certificate stays in QA Review; p5: a draft under QA stays in QA Review; p3/p6 protected
+    assert got == {"p4": "ARCHIVE", "p7": "In Progress", "p8": "In Progress", "p9": "In Progress",
+                   "p10": "Awaiting Human Approval"}, got
+    assert sum("reconciliation" in d for d in diags) == 2, diags
+    assert pr_lane(p(11, draft=True, status="In Review"), lambda _: None) == "In Progress"
+
+    # QA certificate: validate() against a fake review collection
+    body, url = "QA accepted", "https://github.com/o/r/pull/10#pullrequestreview-5"
+    ent = {"repository": "o/r", "pr_number": 10, "head_sha": "a" * 40, "base_ref": "main", "base_sha": "b" * 40,
+           "review_url": url, "review_id": 5, "review_body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+           "verdict": "accepted"}
+    conn = lambda nodes, **pi: {"totalCount": pi.pop("total", len(nodes)),
+                                "pageInfo": {"hasNextPage": False, "endCursor": None, **pi}, "nodes": nodes}
+    review = {"id": "R5", "databaseId": 5, "state": "COMMENTED", "body": body, "url": url,
+              "submittedAt": "2000-01-01T00:00:00Z", "commit": {"oid": "a" * 40}}
+    revs = lambda *rs: Api(lambda a: json.dumps({"data": {"repository": {"pullRequest": {"reviews": conn(list(rs))}}}}))
+    pr10 = p(10, ok_, qa_sha="a" * 40, qa_ev=url)
+    reg = {("o/r", 10): ent}
+    assert validate(revs(review), pr10, reg) == (("a" * 40, url), None)
+    assert validate(revs(review), pr10, {})[1] == "no registry certificate"
+    assert validate(revs(dict(review, body="edited")), pr10, reg)[1] == "certified review body changed"
+    assert validate(revs(review), dict(pr10, head="c" * 40, qa_sha="c" * 40), reg)[0] is None  # a new push voids it
+    assert validate(revs(review), dict(pr10, qa_ev=None), reg)[0] is None
+    assert validate(revs(review, dict(review, id="R6", databaseId=6, state="CHANGES_REQUESTED")), pr10, reg)[0] is None
+    example = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qa-acceptances.example.json")
+    if os.path.exists(example):
+        assert len(load_registry(example)) == 1
+
+    # fail closed on malformed GraphQL, and dry-run never writes
+    node = {"id": "I1", "isArchived": False, "status": {"name": "In Review"}, "qaSha": None, "qaEvidence": None,
+            "content": {"__typename": "PullRequest", "id": "PR1", "number": 7, "state": "OPEN", "merged": False,
+                        "isDraft": True, "headRefOid": "a" * 40, "baseRefName": "main", "baseRefOid": "b" * 40,
+                        "repository": {"nameWithOwner": "o/r"}, "labels": conn([]), "closingIssuesReferences": conn([])}}
+
+    def run_with(items_conn, calls, raw=None):
+        def run(args):
+            calls.append(args)
+            if not read_only(args):
+                return ""  # a write: the assertions below make sure none happen
+            return raw or json.dumps({"data": {"organization": {"projectV2": {"id": "P", "items": items_conn,
+                                      "field": {"id": "F", "options": [{"id": "o1", "name": "In Progress"}]}}}}})
+        return run
+    cfg, nofile = {"owner": "o", "project": 1, "repo": "o/r"}, example + ".absent"
+    calls, out, err = [], [], []
+    assert sync(Api(run_with(conn([node]), calls), dry=True), cfg, nofile, True, out.append, err.append) == 0, err
+    assert out == ["would move PR o/r#7 (item I1): In Review -> In Progress"], out
+    assert calls and all(read_only(a) for a in calls), calls
+    try:
+        Api(run_with(conn([node]), calls), dry=True)("project", "item-edit", "--id", "I1")
+        raise AssertionError("dry-run allowed a write")
+    except PermissionError:
+        pass
+    assert all(read_only(a) for a in calls)
+    assert not read_only(["project", "item-edit"]) and not read_only(["api", "graphql", "-f", "query=mutation{a}"])
+    assert not read_only(["api", "graphql", "-f", "query=query{a}", "-f", "query=mutation{b}"])
+    bad = [conn([node], hasNextPage=None),                    # missing hasNextPage
+           conn([node], total=2),                             # truncated
+           conn([node], hasNextPage=True, endCursor=None),    # cursor that cannot progress
+           conn([node, node]),                                # duplicate node
+           conn([dict(node, content=None)]),                  # null content
+           {"totalCount": 1, "nodes": [node]}]                # no pageInfo
+    for c in bad:
+        calls, err = [], []
+        assert sync(Api(run_with(c, calls)), cfg, nofile, False, out.append, err.append) == 1, c
+        assert "fail closed" in err[0] and all(read_only(a) for a in calls), (err, calls)
+    for raw in ('{"errors": [{"message": "x"}], "data": null}', "not json"):
+        calls, err = [], []
+        assert sync(Api(run_with(None, calls, raw)), cfg, nofile, False, out.append, err.append) == 1
+        assert all(read_only(a) for a in calls)
+
+    # lane names from config
+    saved = dict(LANES)
+    try:
+        configure({**cfg, "lanes": {"approval": "Needs Sign-off"}})
+        assert pr_lane(pr10, lambda _: ("a" * 40, url)) == "Needs Sign-off" and "Needs Sign-off" in auto()
+        for bad_cfg in ({**cfg, "lanes": {"nope": "X"}}, {**cfg, "lanes": {"ready": "Done"}}, {"owner": "o"}):
+            LANES.clear(), LANES.update(saved)
+            try:
+                configure(bad_cfg)
+                raise AssertionError(bad_cfg)
+            except Fail:
+                pass
+    finally:
+        LANES.clear(), LANES.update(saved)
     print("selftest ok")
+    return 0
+
+
+def configure(cfg):
+    """Validate config and apply lane renames; returns the QA acceptances path."""
+    need(isinstance(cfg, dict) and all(cfg.get(k) for k in ("owner", "project", "repo")),
+         "config needs owner, project and repo")
+    lanes = cfg.get("lanes") or {}
+    need(isinstance(lanes, dict) and set(lanes) <= set(LANES) and all(isinstance(v, str) and v for v in lanes.values()),
+         f"config: lanes keys must be among {sorted(LANES)}, values non-empty strings")
+    LANES.update(lanes)
+    need(len(set(LANES.values())) == len(LANES) and "ARCHIVE" not in LANES.values(), "config: lane names must be distinct")
+    return os.path.expanduser(cfg.get("qa_acceptances") or REGISTRY)
+
+
+def main(argv=None, run=gh_run, cfg_path=CFG):
+    ap = argparse.ArgumentParser(prog="board-sync", description="Sync the project board Status lanes.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dry-run", action="store_true", help="read-only; list proposed moves")
+    g.add_argument("--selftest", action="store_true")
+    a = ap.parse_args(argv)  # unknown args exit 2 before any IO
+    if a.selftest:
+        return selftest()
+    with open(cfg_path) as fh:
+        cfg = json.load(fh)
+    try:
+        registry = configure(cfg)
+    except Fail as e:
+        print(f"board-sync: {cfg_path}: {e}", file=sys.stderr)
+        return 1
+    return sync(Api(run, a.dry_run), cfg, registry, a.dry_run)
 
 
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
-        selftest()
-    else:
-        main("--dry-run" in sys.argv)
+    sys.exit(main())

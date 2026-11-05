@@ -326,17 +326,19 @@ def pr_approved(slug, num, since, owner):
     if rc:
         return False, "unreadable"
     d = json.loads(js or "{}")
-    ok, why = pr_verdict(d, since, owner, load("config.json", {}).get("agent_github_logins", []))
+    cfg = load("config.json", {})
+    ok, why = pr_verdict(d, since, owner, cfg.get("agent_github_logins", []), cfg.get("owner_gate_labels", ["human-signoff"]))
     # the head makes the reason unique per approved revision, so pr_resume can resume once per revision
     # qa-passed changes the reason too, so a card parked in Scheduled until QA passes wakes once more for it
     qa = " qa-passed" if any((l.get("name") or "").lower() == "qa-passed" for l in d.get("labels") or []) else ""
     return ok, f"{why} at {d['headRefOid'][:7]}{qa}" if ok is True and d.get("headRefOid") else why
 
 
-def pr_verdict(d, since, owner, agents=()):
+def pr_verdict(d, since, owner, agents=(), gate_labels=("human-signoff",)):
     """(True, why) approved/merged; ("changes", why) a reviewer asked for changes or a person commented after the
     card was blocked; (None, "closed unmerged") for a PR closed without merging (superseded: ignored); (False, "waiting")
-    otherwise. agents: the agents' own GitHub logins (their comments don't count)."""
+    otherwise. agents: the agents' own GitHub logins (their comments don't count). gate_labels (config
+    owner_gate_labels): labels that mean a person must approve, so QA's qa-passed label alone doesn't release the PR."""
     if d.get("state") == "CLOSED" and not d.get("mergedAt"):
         return None, "closed unmerged"
     after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
@@ -351,6 +353,10 @@ def pr_verdict(d, since, owner, agents=()):
         return True, "approved in review"
     if any((l.get("name") or "").lower() in ("approved", "owner-approved") for l in d.get("labels") or []):
         return True, "labelled approved"
+    names = {(l.get("name") or "").lower() for l in d.get("labels") or []}
+    if qa_passed and not names & {g.lower() for g in gate_labels}:
+        # QA's pass label is the merge release for a PR that needs no person's sign-off (no review approval is given there)
+        return True, "qa passed"
     after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
     bots = {a.lower() for a in agents}
     for c in (d.get("comments") or []) + (d.get("reviews") or []):
@@ -530,6 +536,10 @@ def selftest():
     assert pr_verdict({"reviewDecision": "APPROVED", "reviews": [dict(old[0], submittedAt="2026-11-03T10:00:00Z")]}, since, "")[0] is True
     assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-01T10:00:00Z"}, since, "") == (None, "merged before the card waited")
     assert pr_verdict({"state": "CLOSED", "mergedAt": None}, since, "") == (None, "closed unmerged")
+    assert pr_verdict({"reviewDecision": "", "labels": [{"name": "qa-passed"}]}, since, "") == (True, "qa passed")
+    assert pr_verdict({"state": "OPEN", "labels": [{"name": "qa"}]}, since, "") == (False, "waiting")
+    assert pr_verdict({"labels": [{"name": "qa-passed"}, {"name": "human-signoff"}]}, since, "") == (False, "waiting")
+    assert pr_verdict({"labels": [{"name": "qa-passed"}, {"name": "owner-review"}]}, since, "", (), ["human-signoff", "owner-review"]) == (False, "waiting")
     assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-02T10:00:00Z"}, since, "")[0] is True
     assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED")]}, since, "")[0] == "changes"
     assert pr_verdict({"reviews": [rv("reviewer-a", "CHANGES_REQUESTED", "2026-11-01T10:00:00Z")]}, since, "") == (False, "waiting")

@@ -62,7 +62,8 @@ def known_targets():
     import glob, sqlite3
     ids = set()
     try:
-        d = json.load(open(f"{HOME}/channel_directory.json"))
+        with open(f"{HOME}/channel_directory.json", encoding="utf-8") as directory_file:
+            d = json.load(directory_file)
         ids |= {str(e.get("id")) for e in (d.get("platforms") or {}).get("discord") or []}
     except (OSError, ValueError, AttributeError):
         pass
@@ -79,6 +80,35 @@ def known_targets():
             ids |= {str(x) for x in (chat, thread) if x}
     except sqlite3.Error:
         pass
+    # Dormant role threads may have no conversation or directory entry yet.
+    # Trust only an explicit enabled shared-bot Discord thread route whose
+    # parent channel is already known above. Never admit a guild/user ID or
+    # an arbitrary destination from config, and never read profile SOUL files.
+    try:
+        import yaml
+    except ImportError:
+        return ids
+    try:
+        with open(f"{HOME}/config.yaml", encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file)
+        gateway = config.get("gateway", {}) if isinstance(config, dict) else {}
+        routes = gateway.get("profile_routes", []) if isinstance(gateway, dict) else []
+        parents = ids.copy()
+        for route in routes if isinstance(routes, list) else []:
+            if not isinstance(route, dict) or route.get("platform") != "discord":
+                continue
+            if route.get("enabled", True) is not True or not route.get("profile"):
+                continue
+            if route.get("bot_profile") not in (None, "", "default"):
+                continue
+            parent, thread = route.get("chat_id"), route.get("thread_id")
+            if type(parent) not in (str, int) or type(thread) not in (str, int):
+                continue
+            parent, thread = str(parent), str(thread)
+            if parent in parents and thread.isascii() and thread.isdigit():
+                ids.add(thread)
+    except (OSError, ValueError, yaml.YAMLError):
+        pass  # Missing/broken configuration must not broaden target discovery.
     return ids
 
 

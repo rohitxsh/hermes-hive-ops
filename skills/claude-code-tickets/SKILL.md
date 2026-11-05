@@ -49,7 +49,7 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
 
 ## Requesting the owner's review
 
-Mark the PR ready first if it is still a draft (`gh pr ready <pr>`).
+In a QA-gated pipeline, keep the PR draft through the dev checks and independent QA; only QA marks it ready (`gh pr ready <pr>`) after full acceptance. Outside such a pipeline, mark it ready when all applicable checks have passed. A review request never bypasses the QA gate.
 
 When a PR needs the owner (your SOUL says so, for example a `human-signoff` PR, or they asked to see it):
 1. `gh pr edit <pr> --add-assignee example --add-label needs-owner-review`
@@ -84,6 +84,7 @@ A scheduled run ends after its turn, and its background processes end with it, s
 
 ## When things go wrong
 
+- **QA card gating (Kanban):** never create the QA card with your own still-running build card in `parents`: it sits in todo until your card completes, and workers cannot unlink. Create the QA card with no parents, then `kanban_link(parent_id=<qa card>, child_id=<your card>)` so your card waits on QA.
 - **Claude Code reports a usage limit or a login error** (`is_error: true`): hand the same ticket to Codex CLI (step 4) in the same worktree, telling it to continue from what is already there, and say so. Use Claude Code again for the next ticket after its reset. If Codex is also limited or not logged in (`codex login status`), stop the queue: put the ticket back to `ready`, tell the user when the limits reset, and resume after that. Never write the code yourself instead.
 - **No completion notice arrives** (for example, the gateway restarted and the run was lost): on your next turn, check for `in-progress` issues. If one has a PR, review it. If not, remove its worktree and branch and start that ticket again.
 - **Claude Code wants a decision only the user can make:** label `blocked`, ask the user in chat, and continue with other tickets that don't depend on it.
