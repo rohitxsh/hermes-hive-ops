@@ -67,7 +67,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `pr-rules-plan-apply.py` | GitHub's 403 "Upgrade to GitHub Pro" on the rulesets endpoint no longer breaks the Kanban PR gate | PR #143935 (open) |
 | `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent (keep it: the `ops-core` plugin's `pre_gateway_dispatch` hook is only a fallback, because Discord's 👀 reaction and typing indicator start before plugin hooks run; with the hook alone the agent stays silent but still shows those) | PR #120266 (open; leading mode suggested) |
 | `kanban-list-fence-apply.py` | `hermes kanban list` works inside a delegated helper (it skips only the ready-lane refresh the fence refuses) | issue #148926 |
-| `kanban-stale-auth-apply.py` | A quota error left by an older run no longer holds a card forever after a later run ended normally | not reported yet |
+| `kanban-stale-auth-apply.py` | A quota error left by an older run no longer holds a card forever after a later run ended normally | issue #138618; fix PRs open, e.g. #141740 |
 | `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) | Camofox server, not Hermes |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |
 | `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones | PRs #148610, #148611 |
