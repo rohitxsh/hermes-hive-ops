@@ -1,4 +1,7 @@
 name: ops-core
-version: 0.1.0
-description: "The ops kit's orchestration plugin. Step 1: shared SOUL rules kept in one place (`hermes ops-rules apply|check|show`)."
+version: 0.2.0
+description: "The ops kit's orchestration plugin: shared SOUL rules in one place (`hermes ops-rules`), the kit's tools as `hermes ops <tool>`, a fast kanban-doctor trigger, and leaving messages that start with @someone else to that person."
 author: hermes-ops-kit
+provides_hooks:
+  - pre_gateway_dispatch
+  - on_kanban_dispatch_tick

@@ -241,10 +241,10 @@ def register(ctx) -> None:
     ctx.register_cli_command("ops-rules", "Shared SOUL rules: apply, check or show", _cli_setup, _cli)
     ctx.register_cli_command("ops", "Run an ops kit tool: " + ", ".join(sorted(TOOLS)), _ops_setup, _ops)
     ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
+    ctx.register_hook("on_kanban_dispatch_tick", on_kanban_dispatch_tick)     # acts only for the admin profile's dispatcher
     home = os.path.realpath(os.environ.get("HERMES_HOME") or _root())
-    if "gateway" in " ".join(sys.argv) and home == os.path.realpath(_root()):   # from the root gateway only
+    if "gateway" in " ".join(sys.argv) and home == os.path.realpath(_root()):   # once, from the root gateway only
         threading.Timer(30, _check_once).start()
-        ctx.register_hook("on_kanban_dispatch_tick", on_kanban_dispatch_tick)
 
 
 def _selftest():
