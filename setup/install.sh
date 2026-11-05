@@ -40,12 +40,13 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   link attention/attention attention; link attention/attention waiting-on-me; link attention/attention follow-up; link attention/attention renewals
   link consult/consult consult; link my-messages/my-messages my-messages; link quota/quota-status quota-status; link quota/automode automode
   link efficiency/efficiency efficiency; link skill-review/skill-review skill-review; link discord-send/discord-send discord-send; link md-pdf/md-pdf md-pdf; link feeds/feeds feeds
+  link kanban-doctor/kanban-doctor kanban-doctor; link pending-human/pending-human pending-human
   link restart-idle/hermes-restart-idle hermes-restart-idle; link artifacts/publish-artifact publish-artifact
   link issues/issue-digest.py issues; link token-stats/token-stats token-stats; link token-stats/tool-output-stats tool-output-stats
   for s in memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py kanban-feed/kanban-feed:kanban-feed.py \
            issues/issue-digest.py:issue-digest.py issues/issue-pending.sh:issue-pending.sh approval-notify/approval-notify.py:approval-notify.py \
            gateway-heal/gateway-heal.py:gateway-heal.py quota/quota-guard.py:quota-guard.py maintenance/hermes-backup.sh:hermes-backup.sh \
-           maintenance/hermes-update-notice.py:hermes-update-notice.py; do
+           maintenance/hermes-update-notice.py:hermes-update-notice.py kanban-doctor/kanban-doctor:kanban-doctor.py; do
     run install -m 755 "$SRC/${s%%:*}" "$HH/scripts/${s##*:}"
   done
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention check\n' "$SRC" > "$HH/scripts/attention-check.sh"

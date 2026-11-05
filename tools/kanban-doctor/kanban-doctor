@@ -1,0 +1,131 @@
+#!/usr/bin/python3
+"""kanban-doctor (2026-11-04): find Kanban cards that look stuck, for the admin assistant's repair job. No model calls.
+
+  kanban-doctor                      stable list of stuck-looking cards (monitor-script output: no ages or timestamps,
+                                     so the agent runs only when the set or a reason changes)
+  kanban-doctor release ID REASON    release a block-loop-held triage card back to its assignee as written (posts REASON
+                                     as a comment first; the same call pr-resume uses)
+  kanban-doctor --selftest
+
+A card is listed when it is: blocked for >30 min on anything but another card (needs_input blocks are left out: those
+wait on a person); held in triage after a block loop (kind other than needs_input); ready or in review but not picked up for >45 min;
+running with no heartbeat for >30 min; scheduled for >24 h; todo for >12 h although every parent is done; or flagged by
+`hermes kanban diagnostics` at error level. Whether a listed card really waits on a person is the agent's call.
+"""
+import glob
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+H = os.path.expanduser("~")
+DB = f"{H}/.hermes/kanban.db"
+LOOP_HELD = """(select e.kind from task_events e where e.task_id = t.id and e.kind in
+    ('block_loop_detected', 'promoted', 'specified', 'decomposed', 'created') order by e.created_at desc, e.id desc limit 1)
+    = 'block_loop_detected'"""
+
+
+def candidates(db, now, diags=()):
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    # respawn_guarded fires every tick while a card is held, so it must not count as activity
+    last = "(select max(created_at) from task_events e where e.task_id = t.id and e.kind != 'respawn_guarded'{})"
+    rows = c.execute(f"""select t.id, t.status, coalesce(t.block_kind, ''), coalesce(t.assignee, ''), t.title,
+        {last.format("")}, {last.format(" and e.kind = 'heartbeat'")},
+        (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')
+         order by created_at desc limit 1),
+        (t.status = 'triage' and {LOOP_HELD}),
+        (select count(*) from task_links l join tasks p on p.id = l.parent_id where l.child_id = t.id
+         and p.status not in ('done', 'archived'))
+        from tasks t where t.status in ('blocked', 'triage', 'ready', 'review', 'running', 'scheduled', 'todo')""").fetchall()
+    c.close()
+    out = []
+    for tid, status, kind, who, title, last_ev, last_hb, payload, loop_held, open_parents in rows:
+        age = 0 if last_ev is None else (now - last_ev) / 60
+        why = None
+        if status == "blocked" and kind not in ("dependency", "needs_input") and age > 30:
+            # a transient (quota) block can clear by itself: the hour count changes the output so the job looks again
+            why = f"blocked {int(age // 60)}h" if kind == "transient" else "blocked"
+        elif status == "triage" and loop_held and kind != "needs_input":
+            why = "loop-held"
+        elif status in ("ready", "review") and age > 45:
+            why = "not-picked-up"
+        elif status == "running" and age > 30:  # last_ev includes heartbeats; an older run's heartbeat must not count
+            why = "no-heartbeat"
+        elif status == "scheduled" and age > 24 * 60:
+            why = "parked-24h"
+        elif status == "todo" and open_parents == 0 and age > 12 * 60:
+            why = "todo-parents-done"
+        if tid in diags:
+            why = (why + "+" if why else "") + "diagnostic:" + diags[tid]
+        if not why:
+            continue
+        try:
+            reason = (json.loads(payload or "{}") or {}).get("reason", "") if status in ("blocked", "triage", "scheduled") else ""
+        except ValueError:
+            reason = ""
+        out.append(f"{tid} {status} kind={kind or '-'} @{who} [{why}] {title[:80]} | {' '.join(reason.split())[:220]}")
+    return sorted(out)
+
+
+def diagnostics():
+    try:
+        r = subprocess.run([f"{H}/.local/bin/hermes", "kanban", "diagnostics", "--json", "--severity", "error"],
+                           capture_output=True, text=True, timeout=120)
+        return {d["task_id"]: ",".join(sorted({x["kind"] for x in d.get("diagnostics", [])})) for d in json.loads(r.stdout or "[]")}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return {}
+
+
+def release(tid, reason):
+    hermes = f"{H}/.local/bin/hermes"
+    if subprocess.run([hermes, "kanban", "comment", tid, reason], capture_output=True).returncode:
+        sys.exit(f"kanban-doctor: could not comment on {tid}")
+    f = sorted(glob.glob(f"{H}/.hermes/installs/*/facts.json"), key=os.path.getmtime)[-1]
+    py = json.load(open(f))["packages"]["venv"]["environment"] + "/bin/python"
+    code = ("import sys; from hermes_cli import kanban_db as kb, kanban_db_connect as kbc\n"
+            "with kbc.connect_closing() as c: sys.exit(0 if kb.specify_triage_task(c, sys.argv[1]) else 1)")
+    rc = subprocess.run([py, "-I", "-c", code, tid]).returncode
+    print(f"released {tid}" if rc == 0 else f"kanban-doctor: {tid} is not a releasable triage card")
+    sys.exit(rc)
+
+
+def selftest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = f"{d}/k.db"
+        c = sqlite3.connect(db)
+        c.executescript("""create table tasks (id, status, assignee, title, block_kind);
+            create table task_events (id integer primary key, task_id, kind, created_at, payload);
+            create table task_links (parent_id, child_id);
+            insert into tasks values ('a', 'blocked', 'dev', 'tool gap', 'capability'), ('b', 'blocked', 'pm', 'ask', 'needs_input'),
+              ('c', 'triage', 'dev', 'looped', 'transient'), ('d', 'ready', 'qa', 'idle', null), ('e', 'running', 'dev', 'busy', null),
+              ('f', 'todo', 'dev', 'parents done', null), ('g', 'todo', 'dev', 'parent open', null), ('p', 'done', 'x', 'p', null),
+              ('r', 'review', 'dev', 'held rework', null),
+              ('q', 'running', 'x', 'q', null), ('h', 'blocked', 'dev', 'fresh', 'capability');
+            insert into task_events (task_id, kind, created_at, payload) values
+              ('a', 'blocked', 0, '{"reason": "no unlink tool"}'), ('b', 'blocked', 0, '{"reason": "approve?"}'),
+              ('c', 'block_loop_detected', 0, '{"reason": "same block"}'), ('d', 'promoted', 0, '{}'),
+              ('e', 'heartbeat', 99000, '{}'), ('q', 'heartbeat', 0, '{}'), ('q', 'claimed', 99500, '{}'), ('f', 'created', 0, '{}'), ('g', 'created', 0, '{}'), ('h', 'blocked', 99000, '{}'),
+              ('r', 'review_requested', 0, '{}'), ('r', 'respawn_guarded', 99900, '{}');
+            insert into task_links values ('p', 'f'), ('q', 'g');""")
+        c.commit(); c.close()
+        got = candidates(db, 100000, {"e": "repeated_crashes"})
+        ids = [x.split()[0] for x in got]
+        assert ids == ["a", "c", "d", "e", "f", "r"], got
+        assert "[blocked]" in got[0] and "no unlink tool" in got[0] and "[diagnostic:repeated_crashes]" in got[3]
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if a[:1] == ["--selftest"]:
+        selftest()
+    elif a[:1] == ["release"] and len(a) >= 3:
+        release(a[1], " ".join(a[2:]))
+    elif not a:
+        rows = candidates(DB, time.time(), diagnostics()) if os.path.exists(DB) else []
+        print("\n".join(rows) if rows else "no stuck-looking cards")
+    else:
+        sys.exit(__doc__)

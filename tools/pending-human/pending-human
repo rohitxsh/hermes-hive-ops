@@ -1,0 +1,110 @@
+#!/usr/bin/python3
+"""pending-human (2026-11-04): facts for the PM's evening summary of everything waiting on a person, no model calls.
+
+Prints the Kanban cards that wait on people (blocked other than on a dependency or a transient error, parked in
+Scheduled, or held in triage after a block loop), with each one's latest reason, plus the open PRs that need a human
+(labelled human-signoff, changes requested, or awaiting review). The repo comes from ~/agents/pending-human/config.json by profile name; the
+Discord guild lets the PM turn thread ids in reasons into links.
+
+  pending-human [--profile NAME]     (default: this profile, from $HERMES_HOME)
+  pending-human --selftest
+"""
+import datetime
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+H = os.path.expanduser("~")
+CONFIG = f"{H}/agents/pending-human/config.json"   # {"<profile>": ["<owner/repo>", "<discord guild id>"], ...}
+REPOS = {k: tuple(v) for k, v in (json.load(open(CONFIG)) if os.path.exists(CONFIG) else {}).items()}
+LOOP_HELD = """(select e.kind from task_events e where e.task_id = t.id and e.kind in
+    ('block_loop_detected', 'promoted', 'specified', 'decomposed', 'created') order by e.created_at desc, e.id desc limit 1)
+    = 'block_loop_detected'"""
+
+
+def waiting_cards(db, now):
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    rows = c.execute(f"""select t.id, t.status, t.assignee, t.title, coalesce(t.block_kind, ''),
+        (select max(created_at) from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')),
+        (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')
+         order by created_at desc limit 1)
+        from tasks t where t.status in ('blocked', 'scheduled') or (t.status = 'triage' and {LOOP_HELD})
+        order by 6""").fetchall()
+    c.close()
+    out = []
+    for tid, status, who, title, kind, since, payload in rows:
+        if kind in ("dependency", "transient"):
+            continue
+        try:
+            reason = (json.loads(payload or "{}") or {}).get("reason", "")
+        except ValueError:
+            reason = ""
+        out.append({"id": tid, "status": status, "assignee": who, "title": title, "kind": kind,
+                    "waiting_hours": round((now - since) / 3600, 1) if since else None, "reason": reason[:700]})
+    return out
+
+
+def human_prs(repo):
+    try:
+        r = subprocess.run([f"{H}/.local/bin/gh", "pr", "list", "-R", repo, "--json",
+                            "number,title,url,labels,reviewDecision,isDraft,updatedAt"],
+                           capture_output=True, text=True, timeout=60)
+        prs = json.loads(r.stdout or "[]") if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        prs = None
+    if prs is None:
+        return None
+    return [p for p in prs if needs_human(p)]
+
+
+def needs_human(p):
+    labels = {(l.get("name") or "").lower() for l in p.get("labels") or []}
+    return not p.get("isDraft") and ("human-signoff" in labels or p.get("reviewDecision") in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"))
+
+
+def main(args):
+    if args[:1] == ["--selftest"]:
+        return selftest()
+    prof = args[args.index("--profile") + 1] if "--profile" in args else os.path.basename(os.environ.get("HERMES_HOME", "").rstrip("/"))
+    repo, guild = REPOS.get(prof, (None, None))
+    now = time.time()
+    print(f"Pending-human facts for profile {prof}, {datetime.datetime.now():%Y-%m-%d %H:%M}. Discord guild id {guild} "
+          f"(thread links: https://discord.com/channels/{guild}/<thread id>).")
+    cards = waiting_cards(f"{H}/.hermes/kanban.db", now)
+    print(f"\nKanban cards not running and not waiting on another card ({len(cards)}):")
+    print(json.dumps(cards, indent=1) if cards else "none")
+    if repo:
+        prs = human_prs(repo)
+        print(f"\nOpen PRs in {repo} that need a person ({'unreadable' if prs is None else len(prs)}):")
+        print(json.dumps(prs, indent=1) if prs else "none")
+
+
+def selftest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = f"{d}/k.db"
+        c = sqlite3.connect(db)
+        c.executescript("""create table tasks (id, status, assignee, title, block_kind);
+            create table task_events (id integer primary key, task_id, kind, created_at, payload);
+            insert into tasks values ('a', 'blocked', 'pm', 'needs a human', 'needs_input'),
+              ('b', 'blocked', 'dev', 'waits on a card', 'dependency'), ('c', 'running', 'qa', 'busy', null),
+              ('d', 'triage', 'dev', 'loop held', null), ('e', 'triage', 'dev', 'fresh triage', null),
+              ('f', 'scheduled', 'dev', 'parked', null);
+            insert into task_events (task_id, kind, created_at, payload) values
+              ('a', 'blocked', 100, '{"reason": "approve the PRD?"}'), ('d', 'block_loop_detected', 50, '{}'),
+              ('e', 'created', 60, '{}'), ('f', 'scheduled', 70, '{"reason": "waiting on QA"}');""")
+        c.commit(); c.close()
+        got = {x["id"]: x for x in waiting_cards(db, 3700)}
+        assert set(got) == {"a", "d", "f"}, got
+        assert got["a"]["reason"] == "approve the PRD?" and got["a"]["waiting_hours"] == 1.0
+    assert needs_human({"labels": [{"name": "human-signoff"}], "reviewDecision": "APPROVED"})
+    assert not needs_human({"labels": [], "reviewDecision": "APPROVED"})
+    assert not needs_human({"isDraft": True, "labels": [], "reviewDecision": "REVIEW_REQUIRED"})
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -19,6 +19,11 @@
   monitor_script: skill-review.sh
   deliver: admin
   prompt_file: skill-review.md
+- name: kanban doctor
+  schedule: "*/30 * * * *"
+  monitor_script: kanban-doctor.py
+  deliver: admin
+  prompt_file: kanban-doctor.md
 - name: issue handler
   schedule: "*/10 * * * *"
   monitor_script: issue-pending.sh
