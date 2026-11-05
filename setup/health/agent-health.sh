@@ -18,7 +18,11 @@ done
 for d in "$H" "$H"/profiles/*; do
   [ -f "$d/config.yaml" ] || continue
   { [ -f "$d/plugins/outbound-guard/__init__.py" ] && grep -q "outbound-guard" "$d/config.yaml"; } || p+=("outbound-guard missing or not enabled in $d")
+  { [ -f "$d/plugins/ops-core/__init__.py" ] && grep -q "ops-core" "$d/config.yaml"; } || p+=("ops-core missing or not enabled in $d")
 done
+# shared SOUL rules (ops-core): a SOUL rebuilt or edited by hand drops or changes the managed block
+out=$("$HOME/.local/bin/hermes" ops-rules check 2>/dev/null | tail -1)
+case "$out" in "would update 0 SOUL(s)"|"") ;; *) p+=("shared SOUL rules out of date ($out): run hermes ops-rules apply");; esac
 # scheduled jobs failing in any profile
 while IFS= read -r line; do [ -n "$line" ] && p+=("$line"); done < <(python3 - <<'PY'
 import glob, json, os
