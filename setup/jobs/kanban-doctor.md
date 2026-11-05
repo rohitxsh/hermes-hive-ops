@@ -8,6 +8,7 @@ The MONITOR CHANGE above comes from `kanban-doctor`: cards that look stuck. Line
  - held in triage after a block loop for a reason that isn't a person: fix the cause, then `kanban-doctor release <id> "<what you fixed>"`.
  - ready or in review but not picked up: find what holds it back in `hermes kanban diagnostics --task <id>` (cooldown, auth, a PR URL in the assignee's own comment) and fix that cause.
  - running with no heartbeat: `hermes kanban reclaim <id> --reason "<why>"`.
+ - handing a card from review back to its implementer (QA findings to fix): `hermes kanban reopen-review <id> --reason "<why>"`, then `hermes kanban assign <id> <implementer>`. `kanban-doctor release` returns a card to the lane it came from, and an implementer started from the review lane gets a review-only run that can't change code.
  - todo although every parent is done: `hermes kanban promote <id>`.
  - parked for over a day: check what it waits for; if that already happened (the PR merged or was approved, QA passed), unblock it; if it waits on a person, leave it.
  - repeated crashes: read `hermes kanban log <id>` and the last run's output and fix the cause. If the work is in fact done and you verified it, `hermes kanban complete <id> --result "<evidence>"`.
