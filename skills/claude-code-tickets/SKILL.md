@@ -39,7 +39,7 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
    - the full issue text (`gh issue view N`)
    - "Work only in this directory, on branch `issue-N-<slug>`."
    - "Run the checks listed in the ticket and fix failures before finishing. No Android/Gradle builds unless the ticket asks for one."
-   - "Commit with clear messages and push the branch. Its draft pull request already exists: don't open another one and don't mark it ready."
+   - "Commit with clear messages and push the branch. Its draft pull request already exists: don't open another one and don't mark it ready. Keep its description current with `gh pr edit --body-file`: two or three plain sentences first (what this changes for the people using the product, and anything someone needs to do), then the full technical description (what changed and why, how it was tested, risks and open points), ending with `Closes #N`."
    - "Finish with a short summary: what changed, which checks ran and their results, anything left undone."
 4. Start Claude Code **in the background**. A coding run outlasts the foreground tool time limit:
    `terminal(command="cd <worktree> && claude -p \"$(cat ~/.local/state/claude-runs/<repo>-issue-N.prompt)\" --dangerously-skip-permissions --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1", background=true, notify_on_complete=true)`
