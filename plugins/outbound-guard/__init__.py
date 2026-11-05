@@ -16,8 +16,9 @@ ALWAYS = {"send_message", "browser_type", "browser_navigate", "browser_console",
 NET_CMD = re.compile(r"\b(curl|wget|http|https|himalaya|sendmail|mail|mutt|ssh|scp|rsync|nc|ncat|gh|git\s+push|ftp)\b")
 NET_CODE = re.compile(r"\b(requests|urllib|httpx|aiohttp|smtplib|socket|http\.client|websocket|fetch)\b")
 
-CARD = re.compile(r"(?<![\d.])(?:\d[ -]?){14,18}\d(?![\d.])")
-AADHAAR = re.compile(r"(?<![\d.])[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}(?![\d.])")
+# letters/underscore count as neighbours too, so digit runs inside git SHAs and other hex IDs are not matched
+CARD = re.compile(r"(?<![\w.])(?:\d[ -]?){14,18}\d(?![\w.])")
+AADHAAR = re.compile(r"(?<![\w.])[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}(?![\w.])")
 PAN = re.compile(r"\b[A-Z]{3}[PCHABGJLFT][A-Z]\d{4}[A-Z]\b")
 _V_D = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 0, 6, 7, 8, 9, 5], [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
         [3, 4, 0, 1, 2, 8, 9, 5, 6, 7], [4, 0, 1, 2, 3, 9, 5, 6, 7, 8], [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
@@ -104,6 +105,7 @@ if __name__ == "__main__":
     assert find("pay 4111111111111112") == []                       # Luhn fails
     assert find("discord:200000000000000002 thread 200000000000000003") == []   # Discord IDs
     assert find("aadhaar 2341 2341 2346") and find("aadhaar 2341 2341 2346")[0][0] == "Aadhaar number"
+    assert find("head 9f2ab234123412346cd41f and 4111111111111111e0a") == []     # hex SHAs
     assert find("PAN ABCPE1234F") == [("PAN", "AB*******F")]
     assert find("ticket 1793531152 and ts 1793473582.3978465") == []
     assert pre_tool_call("send_message", {"message": "my card 4111111111111111"})["action"] == "approve"
