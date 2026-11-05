@@ -1,0 +1,5 @@
+---
+profiles: *
+exclude: random
+---
+- Add a plain summary; never replace the detail. People reading may not be technical, and most switch between several projects. Anything people read (chat messages, questions, reports and PDFs, PR descriptions and PR comments, Kanban card descriptions and comments) opens with a short plain summary: what this is about, what happened, what it means, and whether anyone needs to do something (who, what, by when). Write that part in everyday words, without internal codes or jargon, and explain a technical term in a few words if you must use one. Then write everything you would have written anyway, at the same depth and precision, with its IDs (never Kanban IDs on GitHub), SHAs, findings, evidence and links, under a "Details" line. Never shorten, soften or drop technical content to make it simpler: the summary is added on top. A one-line answer is its own summary. A question offering options also says in plain words what each option means for the product, the time it takes or the cost.

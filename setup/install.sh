@@ -77,7 +77,7 @@ step_skills() {  # kit skills: shared ones for every non-locked profile through 
 }
 step_third_party() { run bash "$SETUP/third-party/install.sh" || echo "  ! some third-party installs failed (see above); continuing"; }
 step_config() { "$VENV_PY" "$SETUP/config/apply-overlay.py"; }        # these four print their plan when DRY=1
-step_soul() { "$VENV_PY" "$SETUP/soul/apply-sections.py"; }
+step_soul() { "$VENV_PY" "$SETUP/soul/apply-sections.py"; run "$BIN/hermes" ops-rules apply; }   # ops-core: shared rule block
 step_jobs() { "$VENV_PY" "$SETUP/jobs/create-jobs.py"; }
 step_brain() { /usr/bin/python3 "$SETUP/brain/setup-brain.py"; }
 step_health() { run install -m 755 "$SETUP/health/agent-health.sh" "$HH/scripts/agent-health.sh"; }

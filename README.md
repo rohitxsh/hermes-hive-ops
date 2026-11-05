@@ -83,7 +83,7 @@ Drop a patch once its upstream fix is in the Hermes release you run (each patch'
 ### `plugins/`
 `outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval), `approval-notify`, `ask-assistant` (a locked
 profile can ask the admin profile), `token-usage`, `quota-alert`, `codex-usage-alert`, `llm-pacer`, `searxng-tuned`,
-`local-extract`, `vault-guard`, `quota-retry` (a chat message that failed because every provider was out of quota is retried once quota is back, or the agent asks first if tools had already run; needs `plugins.entries.quota-retry.allow_gateway_injection: true`).
+`local-extract`, `vault-guard`, `quota-retry` (a chat message that failed because every provider was out of quota is retried once quota is back, or the agent asks first if tools had already run; needs `plugins.entries.quota-retry.allow_gateway_injection: true`), `ops-core` (the orchestration plugin; so far shared SOUL rules kept in one place: rule files in `plugins/ops-core/rules/` plus your own in `~/agents/rules/`, written into one managed block per SOUL by `hermes ops-rules apply`; `check` reports drift).
 
 ### `tools/` and `bin/`
 `attention` (`waiting-on-me`, `follow-up`, `renewals`, and `pr-resume`: a blocked Kanban card resumes by itself once its PR is approved or merged, or with a review-feedback note when a reviewer requests changes; list the agents' own GitHub logins in `~/agents/attention/config.json` `agent_github_logins` to also wake on human comments), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
