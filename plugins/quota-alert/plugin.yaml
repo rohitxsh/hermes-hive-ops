@@ -1,4 +1,4 @@
 name: quota-alert
 version: 1.0.0
 description: "Adds a short quota note to replies when the profile's main model is nearly used up or a backup is answering (reads the profile's own model chain; replaces codex-usage-alert)."
-author: hermes-ops-kit
+author: hermes-hive-ops

@@ -1,4 +1,4 @@
 name: quota-retry
 version: 1.0.0
 description: "Retries chat messages that failed because every model provider was out of quota, once quota is back (asks first when tools had already run). Gateway only; needs allow_gateway_injection."
-author: hermes-ops-kit
+author: hermes-hive-ops

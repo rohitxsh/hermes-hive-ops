@@ -1,4 +1,4 @@
 name: approval-notify
 version: 1.0.0
 description: "Queues a note when an agent waits for its owner (command approval, question, or blocked Kanban task); the approval-notify cron pings the owner in #assistant if it's still unanswered."
-author: hermes-ops-kit
+author: hermes-hive-ops
