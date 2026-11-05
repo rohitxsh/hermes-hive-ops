@@ -20,7 +20,7 @@ skills:
 terminal:
   home_mode: profile
 plugins:
-  enabled: [approval-notify, ask-assistant, llm-pacer, local-extract, outbound-guard, quota-alert, searxng-tuned, token-usage]
+  enabled: [approval-notify, ask-assistant, llm-pacer, local-extract, outbound-guard, quota-alert, searxng-tuned, token-usage, ops-core]
 platform_toolsets:
   discord: [web, no_mcp, ask_assistant]
   cli: [web, no_mcp, ask_assistant]
