@@ -89,6 +89,8 @@ After fixing, re-run only the lenses that had 🔴 or 🟡 findings, once, on th
 after that goes into an **Accepted trade-offs** section of the document (what, why, who accepted it) or becomes one
 precise question for the owner. Never start a third round on the same findings.
 
+For a conditional documentation-review candidate, distinguish a corrected subcontract from an acknowledged execution blocker. Mark partial corrections still open when the re-audit finds their mechanism or contract incomplete; a fail-closed implementation hold is not a technical fix or human risk acceptance. Keep initial and re-audit severity/count summaries separate, with raw-to-deduplicated finding coverage, so repeated findings are not presented as new unique defects or silently downgraded. Clearly label any narrow post-re-audit editorial changes as not independently re-reviewed.
+
 ## 5. Hand off
 Attach the report to the Kanban card (or link it), and put a one-line summary in the handoff: "Independent review: 3/3
 lenses, 0 🔴, 2 🟡 fixed, 1 🟢 declined". For a PRD checkpoint, include the paraphrase and any open 🔴 in the approval

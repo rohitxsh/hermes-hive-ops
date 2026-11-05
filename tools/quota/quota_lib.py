@@ -37,6 +37,8 @@ CACHE = os.path.join(HERMES_DIR, "quota-cache.json")
 CACHE_TTL = 240          # seconds a usage reading is reused
 AUTO_CAP = 70.0          # % of the second provider's 5-hour window that auto mode may use
 WEEKLY_CAP = 80.0        # % of the second provider's weekly windows that auto mode may use
+# A machine whose accounts are dedicated to its team can turn the auto-mode caps off with ~/agents/quota-no-caps.
+NO_CAPS = os.path.exists(os.path.join(HOME, "agents", "quota-no-caps"))
 WRAP_MARGIN = 10.0       # points before a pause point at which scheduled work is told to wrap up
 FAIL_WINDOW = 3600       # seconds a provider Hermes gave up on in a profile counts as used up there
 EXHAUSTED = 99.5         # a window at or above this is used up
@@ -212,6 +214,15 @@ def claude_windows_from_limits(limits):
         if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float)):
             u = float(w["utilization"])
             out.append(_window(label, u * 100.0 if u <= 1 and isinstance(w["utilization"], float) else u, w.get("resets_at")))
+    # Per-model limits (Fable has its own weekly one): tagged with the model so profile_usage applies them only to
+    # profiles whose Claude models all fall under it.
+    for w in limits.get("model_scoped") or []:
+        if isinstance(w, dict) and w.get("display_name") and isinstance(w.get("utilization"), (int, float)):
+            u = float(w["utilization"])
+            win = _window(f"{w['display_name']} weekly", u * 100.0 if u <= 1 and isinstance(w["utilization"], float) else u,
+                          w.get("resets_at"))
+            win["model"] = str(w["display_name"]).lower()
+            out.append(win)
     return out
 
 
@@ -278,6 +289,8 @@ def five_hour(windows):
 
 def auto_cap(provider, windows):
     """Why auto mode must stop on this (second) provider, or "" while it is under both caps."""
+    if NO_CAPS:
+        return ""
     w = five_hour(windows)
     if w and w["used"] >= AUTO_CAP:
         return (f"{provider_name(provider)}'s 5-hour window is at {w['used']:.0f}% (auto-mode cap {AUTO_CAP:.0f}%), "
@@ -322,7 +335,7 @@ def run_allowed(providers, auto, getu, capped=()):
         why = auto_cap(providers[i], getu(providers[i]))
         if why:
             return False, f"{why} (capped for this profile)"
-    if i >= 2:
+    if i >= min(2, len(providers)):
         return False, (f"{provider_name(providers[0])} and {provider_name(providers[1])} are both used up "
                        f"({describe(getu(providers[0]))}; {describe(getu(providers[1]))})" if len(providers) > 1
                        else f"{provider_name(providers[0])} is used up ({describe(getu(providers[0]))})")
@@ -370,15 +383,33 @@ def recent_failures(home, now=None):
     return out
 
 
+def claude_models(home):
+    """Lower-case Claude model names this profile can run on (primary and fallbacks); [] when unknown."""
+    try:
+        cfg = load_config(home)
+    except (OSError, ImportError):
+        return []
+    entries = [cfg.get("model") or {}] + list(cfg.get("fallback_providers") or [])
+    return [str(e.get("default") or e.get("model") or "").lower() for e in entries
+            if isinstance(e, dict) and is_claude(e.get("provider"))]
+
+
+def scope_claude(windows, models):
+    """Drop per-model windows that don't cover every Claude model of the profile (unknown models: drop them all)."""
+    return [w for w in windows if not w.get("model") or (models and all(w["model"] in m for m in models))]
+
+
 def profile_usage(home, getu, now=None):
     """getu for one profile: a provider that failed there recently counts as used up until FAIL_WINDOW passes."""
     failed = recent_failures(home, now)
+    models = claude_models(home)
 
     def get(provider):
         if provider in failed:
             until = datetime.datetime.fromtimestamp(failed[provider] + FAIL_WINDOW, datetime.timezone.utc).isoformat()
             return [_window("failing", 100.0, until)]
-        return getu(provider)
+        ws = getu(provider)
+        return scope_claude(ws, models) if ws and is_claude(provider) else ws
     return get
 
 
@@ -419,7 +450,24 @@ def wrap_up(providers, auto, getu, capped=()):
     return ""
 
 
+def selftest_model_scoped():
+    lim = {"five_hour": {"utilization": 2, "resets_at": "x"},
+           "model_scoped": [{"display_name": "Fable", "utilization": 100, "resets_at": "y"}]}
+    ws = claude_windows_from_limits(lim)
+    assert [w["label"] for w in ws] == ["5-hour", "Fable weekly"] and ws[1]["model"] == "fable" and ws[1]["used"] == 100.0
+    assert len(scope_claude(ws, ["claude-fable-5-1[1m]"])) == 2                        # Fable-only profile: applies
+    assert len(scope_claude(ws, ["claude-fable-5-1[1m]", "claude-opus-5-5[1m]"])) == 1  # Opus fallback: doesn't
+    assert len(scope_claude(ws, ["claude-opus-5-5[1m]"])) == 1 and len(scope_claude(ws, [])) == 1
+    assert used_up(scope_claude(ws, ["claude-fable-5-1[1m]"])) and not used_up(scope_claude(ws, ["claude-opus-5-5"]))
+
+
 def selftest():
+    global NO_CAPS
+    NO_CAPS = False  # the selftest checks the cap logic itself
+    selftest_model_scoped()
+    full = lambda p: [_window("5-hour", 100.0, "z")]
+    ok, why = run_allowed(["openai-codex"], False, full)                  # a one-provider chain that is used up
+    assert not ok and "is used up" in why, why
     def fake(table):
         return lambda p: table.get("claude" if is_claude(p) else p)
     c = ["openai-codex", "claude-subscription-directsdk-experimental", "nous", "openrouter"]

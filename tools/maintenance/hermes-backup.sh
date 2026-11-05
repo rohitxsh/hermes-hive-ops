@@ -2,6 +2,8 @@
 # Daily Hermes backup (Hermes cron "hermes backup", 02:30, no LLM): every profile's config, skills,
 # sessions, memory, cron jobs, .env and logins, zipped to ~/hermes-backups (keeps 7). It runs before
 # a nightly VM or disk backup, so that image holds it too. Restore: `hermes import <zip>`.
+# Archives contain logins; protect partial and failed writes, not just success.
+umask 077
 # Silent when it works; on failure prints the error (posted by Hermes as a failure notice).
 export PATH="$HOME/.local/bin:$PATH"
 dir="$HOME/hermes-backups"; mkdir -p "$dir"; chmod 700 "$dir"
