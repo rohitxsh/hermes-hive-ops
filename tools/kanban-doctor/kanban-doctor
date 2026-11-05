@@ -4,8 +4,8 @@
   kanban-doctor                      stable list of stuck-looking cards (monitor-script output: no ages or timestamps,
                                      so the agent runs only when the set or a reason changes)
   kanban-doctor release ID REASON [--to PROFILE]
-                                     release a held triage card (posts REASON as a comment first; the same call
-                                     pr-resume uses). Released cards go back to the lane they came from; with --to, a card
+                                     release a held triage card or a blocked one (posts REASON as a comment first;
+                                     triage uses the same call as pr-resume, blocked uses `hermes kanban unblock`). Released cards go back to the lane they came from; with --to, a card
                                      that lands in review is reopened and handed to PROFILE as a normal run (a QA card
                                      going back to its developer), and any other card is reassigned to PROFILE
   kanban-doctor --selftest
@@ -111,9 +111,12 @@ def release(tid, reason, to=None):
     py = json.load(open(f))["packages"]["venv"]["environment"] + "/bin/python"
     code = ("import sys; from hermes_cli import kanban_db as kb, kanban_db_connect as kbc\n"
             "with kbc.connect_closing() as c: sys.exit(0 if kb.specify_triage_task(c, sys.argv[1]) else 1)")
-    rc = subprocess.run([py, "-I", "-c", code, tid]).returncode
+    if status_of(tid)[0] == "blocked":   # a block waiting on a question that no longer needs a person
+        rc = subprocess.run([hermes, "kanban", "unblock", tid], capture_output=True).returncode
+    else:
+        rc = subprocess.run([py, "-I", "-c", code, tid]).returncode
     if rc:
-        sys.exit(f"kanban-doctor: {tid} is not a releasable triage card")
+        sys.exit(f"kanban-doctor: {tid} is not a releasable triage or blocked card")
     for step in after_release(*status_of(tid), to):
         args = [hermes, "kanban", step[0], tid] + step[1:]
         if subprocess.run(args, capture_output=True).returncode:

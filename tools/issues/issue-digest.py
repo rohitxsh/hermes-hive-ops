@@ -162,7 +162,10 @@ def collect(state, now, jobs):
 
 # Printed at every planned gateway restart (multiplexed host notice; sessions paused while the runtime drains).
 DEFAULT_KNOWN = (r"^gateway\.run: --replace target PID [0-9]+ is the host gateway serving",
-                 r"^gateway\.session_authority: Session \S+ paused: runtime_draining")
+                 r"^gateway\.session_authority: Session \S+ paused: runtime_draining",
+                 # the optional JS-dialog watcher gave up attaching to a slow page within 10 s; the browser call carries on
+                 # (non-fatal by design). Only the empty-message timeout form: a crash with error text still surfaces.
+                 r"^tools\.browser_supervisor: CDP supervisor \S+ crashed: $")
 
 
 def known_patterns():
