@@ -1,5 +1,5 @@
 name: vault-guard
 version: 1.0.0
 description: "the team's Bitwarden vault for the agents via Hermes's browser_vault: unlocks from sealed credentials and asks the channel for permission before every login fill (vm-b, local)."
-author: hermes-ops-kit
+author: hermes-hive-ops
 kind: standalone

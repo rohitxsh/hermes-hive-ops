@@ -1,4 +1,4 @@
-# hermes-ops-kit
+# hermes-hive-ops
 
 **Rohit's opinionated setup for [Hermes Agent](https://github.com/NousResearch/hermes-agent).** It turns a vanilla
 Hermes install into an always-on team of agents on a small Linux VM: several profiles behind one gateway (Discord),
@@ -9,7 +9,7 @@ It is one way of running Hermes, not the only one. Everything here ran in produc
 ## Quick start (from a vanilla Hermes install)
 
 ```bash
-git clone https://github.com/rohitxsh/hermes-ops-kit && cd hermes-ops-kit
+git clone https://github.com/rohitxsh/hermes-hive-ops && cd hermes-hive-ops
 cp setup/settings.env.example setup/settings.env      # fill it in (nothing secret)
 setup/install.sh --dry-run                            # see what it would do
 setup/install.sh                                      # bin tools plugins patches skills third-party config soul health jobs brain

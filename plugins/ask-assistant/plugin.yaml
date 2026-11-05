@@ -1,7 +1,7 @@
 name: ask-assistant
 version: 1.0.0
 description: "ask_assistant tool for a locked profile: asks the owner's main assistant (default profile, recall tools only) for context about them; the assistant decides what is safe to share."
-author: hermes-ops-kit
+author: hermes-hive-ops
 kind: standalone
 provides_tools:
   - ask_assistant
