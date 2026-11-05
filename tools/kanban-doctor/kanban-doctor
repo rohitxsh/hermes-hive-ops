@@ -3,14 +3,19 @@
 
   kanban-doctor                      stable list of stuck-looking cards (monitor-script output: no ages or timestamps,
                                      so the agent runs only when the set or a reason changes)
-  kanban-doctor release ID REASON    release a block-loop-held triage card back to its assignee as written (posts REASON
-                                     as a comment first; the same call pr-resume uses)
+  kanban-doctor release ID REASON [--to PROFILE]
+                                     release a held triage card (posts REASON as a comment first; the same call
+                                     pr-resume uses). Released cards go back to the lane they came from; with --to, a card
+                                     that lands in review is reopened and handed to PROFILE as a normal run (a QA card
+                                     going back to its developer), and any other card is reassigned to PROFILE
   kanban-doctor --selftest
 
 A card is listed when it is: blocked for >30 min on anything but another card (needs_input blocks are left out: those
 wait on a person); held in triage after a block loop (kind other than needs_input); ready or in review but not picked up for >45 min;
 running with no heartbeat for >30 min; scheduled for >24 h; todo for >12 h although every parent is done; or flagged by
-`hermes kanban diagnostics` at error level. Whether a listed card really waits on a person is the agent's call.
+`hermes kanban diagnostics` at error level; and, once a day, cards that have waited on a person (needs_input) for over
+a day, so the agent re-checks whether the question was answered or became unnecessary. An unassigned card shows who
+created it. Whether a listed card really waits on a person is the agent's call.
 """
 import glob
 import json
@@ -31,7 +36,7 @@ def candidates(db, now, diags=()):
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
     # respawn_guarded fires every tick while a card is held, so it must not count as activity
     last = "(select max(created_at) from task_events e where e.task_id = t.id and e.kind != 'respawn_guarded'{})"
-    rows = c.execute(f"""select t.id, t.status, coalesce(t.block_kind, ''), coalesce(t.assignee, ''), t.title,
+    rows = c.execute(f"""select t.id, t.status, coalesce(t.block_kind, ''), coalesce(t.assignee, ''), t.title, coalesce(t.created_by, ''),
         {last.format("")}, {last.format(" and e.kind = 'heartbeat'")},
         (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')
          order by created_at desc limit 1),
@@ -41,7 +46,7 @@ def candidates(db, now, diags=()):
         from tasks t where t.status in ('blocked', 'triage', 'ready', 'review', 'running', 'scheduled', 'todo')""").fetchall()
     c.close()
     out = []
-    for tid, status, kind, who, title, last_ev, last_hb, payload, loop_held, open_parents in rows:
+    for tid, status, kind, who, title, creator, last_ev, last_hb, payload, loop_held, open_parents in rows:
         age = 0 if last_ev is None else (now - last_ev) / 60
         why = None
         if status == "blocked" and kind not in ("dependency", "needs_input") and age > 30:
@@ -49,6 +54,9 @@ def candidates(db, now, diags=()):
             why = f"blocked {int(age // 60)}h" if kind == "transient" else "blocked"
         elif status == "triage" and loop_held and kind != "needs_input":
             why = "loop-held"
+        elif status in ("blocked", "triage") and kind == "needs_input" and age > 24 * 60:
+            # the day count changes the output once a day, so the job re-checks whether the question still stands
+            why = f"waiting-on-person {int(age // (24 * 60))}d"
         elif status in ("ready", "review") and age > 45:
             why = "not-picked-up"
         elif status == "running" and age > 30:  # last_ev includes heartbeats; an older run's heartbeat must not count
@@ -65,6 +73,7 @@ def candidates(db, now, diags=()):
             reason = (json.loads(payload or "{}") or {}).get("reason", "") if status in ("blocked", "triage", "scheduled") else ""
         except ValueError:
             reason = ""
+        who = who if who and who != "unassigned" else f"unassigned(created by {creator or '?'})"
         out.append(f"{tid} {status} kind={kind or '-'} @{who} [{why}] {title[:80]} | {' '.join(reason.split())[:220]}")
     return sorted(out)
 
@@ -78,7 +87,23 @@ def diagnostics():
         return {}
 
 
-def release(tid, reason):
+def status_of(tid):
+    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+    row = c.execute("select status, coalesce(assignee, '') from tasks where id = ?", (tid,)).fetchone()
+    c.close()
+    return row or ("", "")
+
+
+def after_release(status, assignee, to):
+    """The hermes kanban calls that put a released card with `to` as a normal run: [] when nothing is needed."""
+    if not to:
+        return []
+    if status == "review":   # back in the review lane: an implementer started there gets a review-only run
+        return [["reopen-review"], ["assign", to]]
+    return [["assign", to]] if assignee != to else []
+
+
+def release(tid, reason, to=None):
     hermes = f"{H}/.local/bin/hermes"
     if subprocess.run([hermes, "kanban", "comment", tid, reason], capture_output=True).returncode:
         sys.exit(f"kanban-doctor: could not comment on {tid}")
@@ -87,8 +112,13 @@ def release(tid, reason):
     code = ("import sys; from hermes_cli import kanban_db as kb, kanban_db_connect as kbc\n"
             "with kbc.connect_closing() as c: sys.exit(0 if kb.specify_triage_task(c, sys.argv[1]) else 1)")
     rc = subprocess.run([py, "-I", "-c", code, tid]).returncode
-    print(f"released {tid}" if rc == 0 else f"kanban-doctor: {tid} is not a releasable triage card")
-    sys.exit(rc)
+    if rc:
+        sys.exit(f"kanban-doctor: {tid} is not a releasable triage card")
+    for step in after_release(*status_of(tid), to):
+        args = [hermes, "kanban", step[0], tid] + step[1:]
+        if subprocess.run(args, capture_output=True).returncode:
+            sys.exit(f"kanban-doctor: released {tid}, but `{' '.join(args[1:])}` failed: fix it by hand")
+    print(f"released {tid}" + (f" to {to} ({' '.join(status_of(tid))})" if to else ""))
 
 
 def selftest():
@@ -96,25 +126,30 @@ def selftest():
     with tempfile.TemporaryDirectory() as d:
         db = f"{d}/k.db"
         c = sqlite3.connect(db)
-        c.executescript("""create table tasks (id, status, assignee, title, block_kind);
+        c.executescript("""create table tasks (id, status, assignee, title, block_kind, created_by);
             create table task_events (id integer primary key, task_id, kind, created_at, payload);
             create table task_links (parent_id, child_id);
-            insert into tasks values ('a', 'blocked', 'dev', 'tool gap', 'capability'), ('b', 'blocked', 'pm', 'ask', 'needs_input'),
+            insert into tasks (id, status, assignee, title, block_kind) values ('a', 'blocked', 'dev', 'tool gap', 'capability'), ('b', 'blocked', 'pm', 'ask', 'needs_input'),
               ('c', 'triage', 'dev', 'looped', 'transient'), ('d', 'ready', 'qa', 'idle', null), ('e', 'running', 'dev', 'busy', null),
               ('f', 'todo', 'dev', 'parents done', null), ('g', 'todo', 'dev', 'parent open', null), ('p', 'done', 'x', 'p', null),
               ('r', 'review', 'dev', 'held rework', null),
               ('q', 'running', 'x', 'q', null), ('h', 'blocked', 'dev', 'fresh', 'capability');
+            insert into tasks values ('u', 'ready', 'unassigned', 'no owner', null, 'research');
             insert into task_events (task_id, kind, created_at, payload) values
               ('a', 'blocked', 0, '{"reason": "no unlink tool"}'), ('b', 'blocked', 0, '{"reason": "approve?"}'),
               ('c', 'block_loop_detected', 0, '{"reason": "same block"}'), ('d', 'promoted', 0, '{}'),
-              ('e', 'heartbeat', 99000, '{}'), ('q', 'heartbeat', 0, '{}'), ('q', 'claimed', 99500, '{}'), ('f', 'created', 0, '{}'), ('g', 'created', 0, '{}'), ('h', 'blocked', 99000, '{}'),
+              ('e', 'heartbeat', 99000, '{}'), ('q', 'heartbeat', 0, '{}'), ('q', 'claimed', 99500, '{}'), ('f', 'created', 0, '{}'), ('g', 'created', 0, '{}'), ('h', 'blocked', 99000, '{}'), ('u', 'created', 0, '{}'),
               ('r', 'review_requested', 0, '{}'), ('r', 'respawn_guarded', 99900, '{}');
             insert into task_links values ('p', 'f'), ('q', 'g');""")
         c.commit(); c.close()
         got = candidates(db, 100000, {"e": "repeated_crashes"})
         ids = [x.split()[0] for x in got]
-        assert ids == ["a", "c", "d", "e", "f", "r"], got
-        assert "[blocked]" in got[0] and "no unlink tool" in got[0] and "[diagnostic:repeated_crashes]" in got[3]
+        assert ids == ["a", "b", "c", "d", "e", "f", "r", "u"], got
+        assert "[waiting-on-person 1d]" in got[1] and "@unassigned(created by research) [not-picked-up]" in got[7], got
+        assert "[blocked]" in got[0] and "no unlink tool" in got[0] and "[diagnostic:repeated_crashes]" in got[4]
+    assert after_release("review", "qa", "dev") == [["reopen-review"], ["assign", "dev"]]
+    assert after_release("ready", "qa", "dev") == [["assign", "dev"]]
+    assert after_release("ready", "dev", "dev") == [] and after_release("review", "qa", None) == []
     print("selftest ok")
 
 
@@ -123,7 +158,9 @@ if __name__ == "__main__":
     if a[:1] == ["--selftest"]:
         selftest()
     elif a[:1] == ["release"] and len(a) >= 3:
-        release(a[1], " ".join(a[2:]))
+        to = a[a.index("--to") + 1] if "--to" in a and a.index("--to") + 1 < len(a) else None
+        words = [w for i, w in enumerate(a[2:], 2) if w != "--to" and (i == 0 or a[i - 1] != "--to")]
+        release(a[1], " ".join(words), to)
     elif not a:
         rows = candidates(DB, time.time(), diagnostics()) if os.path.exists(DB) else []
         print("\n".join(rows) if rows else "no stuck-looking cards")
