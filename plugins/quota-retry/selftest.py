@@ -146,6 +146,7 @@ def main():
     matcher()
     availability()
     home = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, home, True)  # selftest leaves nothing in /tmp
     ids = build(home)
     sent = []
     inject = lambda content, role="user", *, session_key=None, origin=None: sent.append((session_key, content)) or True
@@ -197,6 +198,7 @@ def main():
 
     # rate cap, and a refused injection is retried on the next scan
     home2 = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, home2, True)  # selftest leaves nothing in /tmp
     build(home2)
     qr.MAX_PER_TICK = 1
     refused = qr.tick(home2, lambda *a, **k: False, False, now=NOW)
@@ -211,6 +213,7 @@ def main():
 
     # the failed session was ended by /new (session_reset): inject by chat origin, not by its session key
     home4 = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, home4, True)  # selftest leaves nothing in /tmp
     origin = {"platform": "discord", "chat_id": "999", "chat_type": "thread", "thread_id": "999", "user_id": "2",
               "user_name": "Alex", "profile": "p"}
     db = sqlite3.connect(os.path.join(home4, "state.db"))
@@ -229,6 +232,7 @@ def main():
 
     # quota_lib can't tell: retried only an hour after the failure
     home3 = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, home3, True)  # selftest leaves nothing in /tmp
     build(home3)
     qr.quota_back = lambda h, since, trust=False: (None, "quota unknown")
     assert {d for d, _, _ in qr.tick(home3, inject, True, now=NOW - 1800)} <= {"waiting", "expired"}

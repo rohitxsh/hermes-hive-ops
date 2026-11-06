@@ -502,6 +502,7 @@ def selftest():
     assert not wrap_up(c, True, fake({"openai-codex": out5, "claude": c71}))        # already paused: no wrap-up
     import tempfile
     home = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, home, True)  # selftest leaves nothing in /tmp
     os.makedirs(os.path.join(home, "logs"))
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     with open(os.path.join(home, "logs", "agent.log"), "w") as fh:

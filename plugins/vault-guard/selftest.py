@@ -20,6 +20,8 @@ import hermes_constants as hc
 
 assert vg._REVOCABLE, "revocation hook did not attach"
 A, B = tempfile.mkdtemp(), tempfile.mkdtemp()
+__import__('atexit').register(__import__('shutil').rmtree, A, True)  # selftest leaves nothing in /tmp
+__import__('atexit').register(__import__('shutil').rmtree, B, True)  # selftest leaves nothing in /tmp
 cur = {"h": A}
 hc.get_hermes_home = lambda: Path(cur["h"])
 state = {"s": "unlocked", "during": None}
