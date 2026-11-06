@@ -56,6 +56,10 @@ plugins:
 web:
   search_backend: searxng-tuned     # set SEARXNG_URL in each profile's .env
   extract_backend: local-extract
+webapp:                             # Desktop workspace in a browser, http://<host>:9120; sign-in: tools/ui-password webapp
+  enabled: true
+  host: 0.0.0.0                     # LAN; it stays off until a sign-in exists. Firewall 9119/9120/6080 to your LAN
+  port: 9120
 browser:
   cloud_provider: camofox           # see setup/services/run/camofox.run
   inactivity_timeout: 900

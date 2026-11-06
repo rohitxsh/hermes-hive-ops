@@ -1,5 +1,10 @@
 #!/bin/bash
-# Hermes dashboard on loopback only: it has no login and can edit ~/.hermes/.env.
+# Hermes dashboard, always on, port 9119. On the LAN (0.0.0.0) once it has its own sign-in (`ui-password dashboard`:
+# a username and scrypt hash in ~/.config/hermes-ui/dashboard.env, which override the Webapp's in config.yaml).
+# Until then it stays on loopback, where Hermes needs no sign-in. It can read and edit ~/.hermes/.env.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
-exec "$HOME/.local/bin/hermes" dashboard --host 127.0.0.1 --port 9119 --no-open
+host=127.0.0.1
+f="$HOME/.config/hermes-ui/dashboard.env"
+if [ -s "$f" ]; then set -a; . "$f"; set +a; host=0.0.0.0; fi
+exec "$HOME/.local/bin/hermes" dashboard --host "$host" --port 9119 --no-open

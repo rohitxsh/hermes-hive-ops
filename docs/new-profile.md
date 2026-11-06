@@ -48,7 +48,7 @@ The clone copies config.yaml, .env, SOUL.md and skills. Its config already carri
 
 ## 6. Load and verify
 ```bash
-sudo systemd-run --unit hermes-restart-idle --collect ~/.local/bin/hermes-restart-idle --webui
+sudo systemd-run --unit hermes-restart-idle --collect ~/.local/bin/hermes-restart-idle
 grep -a "Cron scheduler will tick" ~/.hermes/logs/gateway.log | tail -1   # the new name must be in the list
 bash ~/.hermes/scripts/agent-health.sh                                       # must print nothing (clean)
 ```

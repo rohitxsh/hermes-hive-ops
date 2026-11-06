@@ -6,7 +6,7 @@
 set -euo pipefail
 U=$1; shift; SVCS=${*:-hermes}; HOMEDIR=$(getent passwd "$U" | cut -d: -f6); HERE=$(cd "$(dirname "$0")" && pwd)
 sed "s#__USER__#$U#; s#__HOME__#$HOMEDIR#g" "$HERE/agent-worker@.service.template" > /etc/systemd/system/agent-worker@.service
-declare -A CREDS=([hermes]="discord_bot_token" [webui]="ui_password" [workspace]="hermes_api_key ui_password" [camofox]="ui_password" [dashboard]="" [vaultwarden]="")
+declare -A CREDS=([hermes]="discord_bot_token" [camofox]="ui_password" [dashboard]="" [vaultwarden]="")
 for s in $SVCS; do
   install -d -o "$U" -g "$U" "$HOMEDIR/agents/$s"
   install -m 755 -o "$U" -g "$U" "$HERE/run/$s.run" "$HOMEDIR/agents/$s/run"

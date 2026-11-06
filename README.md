@@ -55,7 +55,7 @@ vanilla Hermes and checks patches, tools, jobs and the self-check, without touch
 | `config/overlay.yaml`, `locked.yaml` | The settings this kit runs with (smart approvals with a written policy and deny list, compression at 200k tokens, queued input, tool lines kept out of chat, loop-guard limits, holographic memory, SearXNG search, local extraction, Camofox browser, sealed secrets). `locked.yaml` makes a profile a web-only chat. Applied with comments preserved. |
 | `soul/sections/` | Generic SOUL sections appended to every profile: character, usage limits, auto mode, failures, visuals, avoiding loops, status questions, reporting results, next steps, memory, long messages, second brain, attention. Plus the i-have-adhd reply format when that skill is installed. |
 | `jobs/` | Generic maintenance jobs: self-check, quota guard, approval notify, gateway heal, backup, issue digest and handler, memory learn and export, update notice, attention check, PR resume, skill review, Kanban feed, board sync, kanban doctor (repairs stuck Kanban cards that aren't waiting on a person, and once a day releases blocked or triage cards whose question was answered or no longer needs a person) |
-| `services/` | One systemd template (`agent-worker@<name>`) and run scripts for the gateway, WebUI, dashboard, Workspace, Camofox and Vaultwarden; secrets only via sealed credentials |
+| `services/` | One systemd template (`agent-worker@<name>`) and run scripts for the gateway, dashboard (LAN :9119 once `tools/ui-password` sets its sign-in), Camofox (noVNC on LAN :6080) and Vaultwarden; secrets only via sealed credentials |
 | `health/agent-health.sh` | Daily self-check: silent when healthy, one line per problem |
 | `brain/setup-brain.py` | `~/brain`, plain-Markdown long-term notes in local git, filed nightly by memory-learn |
 | `third-party/install.sh` | Pinned third-party pieces (below) |
@@ -124,8 +124,8 @@ Anthropic's [data-visualization](https://github.com/anthropics/knowledge-work-pl
 camofox-browser 1.18.1, markitdown 0.1.9, Hermes's `edge-tts` and `stt-whisper` extras (local Whisper `small`),
 the catalog plugins `hermes-talk` 0.22.1 (realtime voice on the ChatGPT subscription; non-default profile copies keep
 their `pyproject.toml` aside, or the shared venv refuses a second `hermes-talk` package) and `memory-wiki`,
-[Agent Reach](https://github.com/Panniantong/Agent-Reach) 1.6.1 (release wheel, sha256 pinned, uv-managed Python), [hermes-webui](https://github.com/nesquena/hermes-webui) v0.52.544,
-[hermes-workspace](https://github.com/outsourc-e/hermes-workspace) v2.3.0.
+[Agent Reach](https://github.com/Panniantong/Agent-Reach) 1.6.1 (release wheel, sha256 pinned, uv-managed Python). The web UIs are Hermes's own: the Webapp (gateway, LAN :9120) and the dashboard (LAN :9119), each with its own
+password from `tools/ui-password/ui-password webapp|dashboard`; hermes-webui and hermes-workspace are no longer used.
 
 ### Attention renewals
 
