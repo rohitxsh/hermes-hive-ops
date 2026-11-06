@@ -23,7 +23,7 @@ Every step is idempotent and keeps a backup of what it changes (`*.bak-kit`). Ru
 tells you when an update dropped a patch). Since v0.22.6 the built-in browser tools are gone from core: Camofox is the
 catalog plugin `camofox` (Hermes installs it for homes that use Camofox), and a home that had `browser.backend: off`
 needs `agent.disabled_toolsets: [browser]` to stay browser-free. An update or a plugin install can re-sync Hermes's venv
-and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it). uv's
+and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it). `hermes plugins update` re-syncs the venv the same way, so check the libraries after it too. uv's
 `exclude-newer` cutoff can refuse a library version newer than the Hermes release; reinstall with
 `--exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`. A `.patch` file that adds a new file leaves it behind as untracked
 when you reset the tree for an update; move it aside before `git apply`, or the patch is refused.
@@ -81,6 +81,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` | PR #145090 (open) |
 | `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) | PR #148598 |
 | `kanban-pr-guard-author-apply.py` | The duplicate-PR guard (`active_pr`) counts only PR links in comments by the card's own assignee, so a PM or reviewer citing a PR no longer holds an unrelated ready card for 24 h ("kanban dispatcher stuck") | PR #146075 (open) |
+| `quiet-recall-status-apply.py` | The memory recall line ("🧠 Holographic — recalled 2 memories") and the transcript-reload notice stay out of Discord and other chats (the CLI keeps them), like the compaction notices Hermes already filters there. Pair it with `display.platforms.discord.suppress_warning_notifications: true` so chats get only real agent messages | none yet |
 | `guardian-filter-retry-apply.py` (+ test) | When a provider's content filter blanks the smart-approval guardian's one-word verdict, the profile's first fallback provider is asked once instead of escalating (an escalation in an unattended run is a refusal). Pair it with `auxiliary.approval.fallback_chain` set to that same provider, so a provider outage doesn't escalate everything either | none yet |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) | PRs #98873 (cron), #135169 (verdict parsing) |
 | `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) | PR #146972; `@silent`: issue #148594 |
@@ -113,8 +114,8 @@ design docs) and `docs-bootstrap` (contract-style READMEs for code that has no d
 ## Third-party pieces (installed by `setup/third-party/install.sh`, not copied here)
 
 [obra/superpowers](https://github.com/obra/superpowers) @ 2ce8aa15 (its session-start injection is turned off by
-`tools/speed-tune`), [holographic](https://github.com/itpartypattaya/hermes-plugin-holographic) @ b81f060,
-[claude-subscription-directsdk](https://github.com/NousResearch/hermes-official-plugins) @ 54afaf5,
+`tools/speed-tune`), [holographic](https://github.com/itpartypattaya/hermes-plugin-holographic) @ 6fe7d42 (0.26.4),
+[claude-subscription-directsdk](https://github.com/NousResearch/hermes-official-plugins) @ 83f0a89 (0.3.4),
 [cloudflare/security-audit-skill](https://github.com/cloudflare/security-audit-skill) @ c1c8a8c,
 [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) @ 1ecea19,
 Anthropic's [data-visualization](https://github.com/anthropics/knowledge-work-plugins) @ 2574e29 and
