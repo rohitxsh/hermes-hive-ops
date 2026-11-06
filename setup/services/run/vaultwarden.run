@@ -2,6 +2,8 @@
 # Vaultwarden, the agents' own password vault (used by vault-fill and the vault-logins skill). LAN port 8222 over https
 # (its web vault needs https off localhost): put a cert whose SAN lists localhost, 127.0.0.1 and this host's LAN IP in
 # ~/vaultwarden/ssl and set ROCKET_TLS; account master passwords are the sign-in. Firewall 8222 to your LAN.
+# Changing DOMAIN later changes the sign-in token issuer and logs every client out (bw CLI included): seal the
+# account's API key (bw_clientid, bw_clientsecret) first if it has two-step login, or vault-fill can't log back in.
 # Settings in ~/vaultwarden/vaultwarden.env; data in ~/vaultwarden. Pin the image by digest in production.
 set -euo pipefail
 docker rm -f vaultwarden >/dev/null 2>&1 || true
