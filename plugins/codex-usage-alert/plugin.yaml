@@ -1,3 +1,0 @@
-name: codex-usage-alert
-version: "1.0"
-description: Appends a warning to every reply while the Codex 5-hour or weekly usage window is at or above 90%.
