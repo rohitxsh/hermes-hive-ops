@@ -1,0 +1,24 @@
+#!/bin/bash
+# Daily update of the coding CLIs (Claude Code native install, Codex CLI from npm under ~/.local), run from cron.
+# Skips the day when a coding run is active, so a version never changes under a running ticket. Logs one line per
+# change to ~/.local/state/cli-update.log; silent when nothing changed. Install: crontab line
+#   20 4 * * * $HOME/agents/src/cli-update/cli-update
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+LOG=$HOME/.local/state/cli-update.log; mkdir -p "$(dirname "$LOG")"
+if pgrep -f -- '(^|/)claude .*(-p|--print)|codex (exec|review)' >/dev/null; then
+  echo "$(date '+%F %T') skipped: a coding run is active" >> "$LOG"; exit 0
+fi
+if command -v claude >/dev/null; then
+  a=$(claude --version 2>/dev/null | head -1)
+  timeout 600 claude update >/dev/null 2>&1
+  b=$(claude --version 2>/dev/null | head -1)
+  [ "$a" = "$b" ] || echo "$(date '+%F %T') claude $a -> $b" >> "$LOG"
+fi
+if [ -d "$HOME/.local/lib/node_modules/@openai/codex" ] && command -v npm >/dev/null; then
+  a=$(codex --version 2>/dev/null)
+  NPM_CONFIG_PREFIX=$HOME/.local timeout 600 npm install -g --no-audit --no-fund @openai/codex@latest >/dev/null 2>&1 \
+    || echo "$(date '+%F %T') codex update FAILED (npm)" >> "$LOG"
+  b=$(codex --version 2>/dev/null)
+  [ "$a" = "$b" ] || echo "$(date '+%F %T') codex $a -> $b" >> "$LOG"
+  [ -n "$b" ] || echo "$(date '+%F %T') codex does not start after the update: check node/npm" >> "$LOG"
+fi
