@@ -12,7 +12,14 @@ latest() { curl -fsSL "https://api.github.com/repos/$1/releases/latest" | python
 if want claude; then echo "== Claude Code"
   curl -fsSL https://claude.ai/install.sh -o claude-install.sh && bash claude-install.sh >/dev/null 2>&1; echo "  claude $($BIN/claude --version 2>/dev/null)"; fi
 if want codex; then echo "== Codex CLI"
-  NPM_CONFIG_PREFIX=$HOME/.local npm install -g --no-audit --no-fund @openai/codex >/dev/null 2>&1; echo "  codex $($BIN/codex --version 2>/dev/null)"; fi
+  NPM_CONFIG_PREFIX=$HOME/.local npm install -g --no-audit --no-fund @openai/codex@latest >/dev/null 2>&1
+  if ! command -v node >/dev/null && NB=$(ls -d "$HOME"/.hermes/tools/node-*/bin 2>/dev/null | sort -V | tail -1); then
+    # no system node: npm's symlink to codex.js can't run, so launch it with Hermes's bundled node (rm the link first:
+    # writing through it would overwrite codex.js)
+    rm -f "$BIN/codex"; printf '%s\n' '#!/bin/sh' "exec \"$NB/node\" \"$HOME/.local/lib/node_modules/@openai/codex/bin/codex.js\" \"\$@\"" > "$BIN/codex"
+    chmod 755 "$BIN/codex"
+  fi
+  echo "  codex $($BIN/codex --version 2>/dev/null)"; fi
 if want gh; then echo "== GitHub CLI"
   GV=$(latest cli/cli)
   curl -fsSL -o gh.tgz "https://github.com/cli/cli/releases/download/v$GV/gh_${GV}_linux_amd64.tar.gz"
