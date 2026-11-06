@@ -1,6 +1,8 @@
 #!/bin/bash
-# Vaultwarden, the agents' own password vault (used by vault-fill and the vault-logins skill). Loopback only.
+# Vaultwarden, the agents' own password vault (used by vault-fill and the vault-logins skill). LAN port 8222 over https
+# (its web vault needs https off localhost): put a cert whose SAN lists localhost, 127.0.0.1 and this host's LAN IP in
+# ~/vaultwarden/ssl and set ROCKET_TLS; account master passwords are the sign-in. Firewall 8222 to your LAN.
 # Settings in ~/vaultwarden/vaultwarden.env; data in ~/vaultwarden. Pin the image by digest in production.
 set -euo pipefail
 docker rm -f vaultwarden >/dev/null 2>&1 || true
-exec docker run --rm --name vaultwarden --env-file "$HOME/vaultwarden/vaultwarden.env" -v "$HOME/vaultwarden:/data" -p 127.0.0.1:8222:80 vaultwarden/server:latest
+exec docker run --rm --name vaultwarden --env-file "$HOME/vaultwarden/vaultwarden.env" -v "$HOME/vaultwarden:/data" -p 8222:80 vaultwarden/server:latest
