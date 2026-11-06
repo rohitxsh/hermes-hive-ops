@@ -10,8 +10,8 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 pin() { git clone -q "$1" "$T/$2" && git -C "$T/$2" -c advice.detachedHead=false checkout -q "$3"; }
 
 echo "== Hermes plugins (official and community catalog, pinned)"
-"$HERMES" plugins install claude-subscription-directsdk --ref 54afaf5014db23346148436c4883eb64095e8060 --yes-deps --no-enable || echo "  install claude-subscription-directsdk by hand: hermes plugins install --help"
-"$HERMES" plugins install holographic --ref b81f060937ef230759fa171a7e2ea209e84b0a60 --yes-deps --no-enable || echo "  install holographic by hand (repo itpartypattaya/hermes-plugin-holographic @ b81f060)"
+"$HERMES" plugins install claude-subscription-directsdk --ref 83f0a896b3518c7131181838e340c9a80c79524d --yes-deps --no-enable || echo "  install claude-subscription-directsdk by hand: hermes plugins install --help"
+"$HERMES" plugins install holographic --ref 6fe7d424cdc1b197e4a1f2dc1542e9e3869bf4f0 --yes-deps --no-enable || echo "  install holographic by hand (repo itpartypattaya/hermes-plugin-holographic @ 6fe7d42)"
 
 echo "== Shared skills (pinned upstream commits)"
 pin https://github.com/ayghri/i-have-adhd adhd 1ecea19 && rm -rf "$SK/i-have-adhd" && cp -r "$T/adhd/skills/i-have-adhd" "$SK/" && cp "$T/adhd/LICENSE" "$SK/i-have-adhd/"
