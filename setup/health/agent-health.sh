@@ -8,7 +8,13 @@ KIT_PATCHES="$HOME/agents/src/hermes-local-patches"
 # gateway service (when it runs under systemd)
 if systemctl list-unit-files 'agent-worker@.service' >/dev/null 2>&1 && systemctl cat agent-worker@hermes >/dev/null 2>&1; then
   [ "$(systemctl is-active agent-worker@hermes)" = active ] || p+=("gateway service agent-worker@hermes is not active")
+  # every other enabled agent-worker@ service (dashboard, camofox, vaultwarden, ...) must be running too
+  for u in $(ls /etc/systemd/system/multi-user.target.wants/ 2>/dev/null | sed -n 's/^agent-worker@\(.*\)\.service$/\1/p'); do
+    [ "$u" = hermes ] || systemctl is-active -q "agent-worker@$u" || p+=("agent-worker@$u is $(systemctl is-active "agent-worker@$u") (enabled service not running)")
+  done
 fi
+# coding CLIs still logged in (the fallback coding CLI fails silently otherwise)
+[ -x "$HOME/.local/bin/codex" ] && { "$HOME/.local/bin/codex" login status 2>&1 | grep -q "Logged in" || p+=("Codex CLI is not logged in: run codex login --device-auth"); }
 # local Hermes patches (a hermes update can drop them)
 for f in "$KIT_PATCHES"/*-apply.py; do
   [ -f "$f" ] && grep -q '"--check"' "$f" || continue   # only patches with a report-only mode; others would re-apply

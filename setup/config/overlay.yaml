@@ -58,7 +58,7 @@ web:
   extract_backend: local-extract
 webapp:                             # Desktop workspace in a browser, http://<host>:9120; sign-in: tools/ui-password webapp
   enabled: true
-  host: 0.0.0.0                     # LAN; it stays off until a sign-in exists. Firewall 9119/9120/6080 to your LAN
+  host: 127.0.0.1                   # loopback until `ui-password webapp` sets a sign-in and switches it to 0.0.0.0 (LAN)
   port: 9120
 browser:
   cloud_provider: camofox           # see setup/services/run/camofox.run
