@@ -10,7 +10,7 @@ approvals:
   unattended_mode: smart            # needs patches/smart-unattended-apply.py
   single_query_mode: smart
   timeout: 10800
-  discord_prompt_timeout: 900
+  discord_prompt_timeout: 21600     # buttons last as long as the longest request (settled cards retire, Hermes >= 0.22.6)
   smart_policy: >-
     Owner policy: the owner wants to be asked only when a command is really concerning or dangerous. APPROVE routine
     work without asking: reading files, logs and system state; listing, searching, ps, df, cd, mkdir; creating or

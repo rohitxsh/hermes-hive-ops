@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Ping the owner in #assistant about agents waiting for them (Hermes cron "approval notify", every minute,
 no LLM). Reads ~/.hermes/approval-queue.jsonl, written by the approval-notify plugin in every profile.
-A request is announced once, only if it is still unanswered GRACE seconds after it started, and a Discord
-command approval once more when its buttons expire (Hermes caps them at 15 min: approvals.discord_prompt_timeout)
-while the request itself stays open for approvals.timeout (3 h, 6 h in auto mode), answerable with /approve or
-/deny in the same chat. Kanban tasks blocked on a human are announced once each. Prints nothing when there's
+A request is announced once, only if it is still unanswered GRACE seconds after it started. Its Discord buttons
+last as long as the request (approvals.discord_prompt_timeout >= approvals.timeout: 3 h, 6 h in auto mode; since
+Hermes 0.22.6 a settled card's buttons are retired, so a long button life is safe). Kanban tasks blocked on a human are announced once each. Prints nothing when there's
 nothing new.
 `approval-notify.py --selftest` checks the logic."""
 import json
@@ -17,7 +16,6 @@ QUEUE = os.path.expanduser("~/.hermes/approval-queue.jsonl")
 STATE = os.path.expanduser("~/.hermes/approval-notify-state.json")
 GRACE = 180         # seconds: answered within 3 minutes = no ping (owner, 2026-11-04)
 MAX_AGE = 21600     # older unanswered requests have timed out (approvals.timeout: 3 h, 6 h in auto mode)
-BUTTONS = 900       # Discord buttons expire after this (approvals.discord_prompt_timeout, Hermes max 900)
 KEEP = 86400        # queue lines kept this long
 KIND = {"approval": "approve a command", "clarify": "answer a question"}
 
@@ -60,16 +58,9 @@ def pending(records, notified, now):
             who, chan = where(r.get("session_key"), r.get("profile"))
             what = KIND.get(r.get("kind"), f"respond ({r.get('kind')})")
             prompt = _clip(r.get("prompt"), 300)
-            discord = ":discord:" in (r.get("session_key") or "") and r.get("kind") == "approval"
-            if not discord or now - r["at"] < BUTTONS:
-                if rid not in notified:
-                    hint = " (buttons work for 15 min; after that type `/approve` or `/deny` there)" if discord else ""
-                    lines.append(f"• **{who}** is waiting for you to {what} in {chan}" + (f": `{prompt}`" if prompt else "") + hint)
-                    ids.append(rid)
-            elif rid + ":expired" not in notified:
-                lines.append(f"• **{who}** is still waiting in {chan}" + (f" (`{_clip(prompt, 160)}`)" if prompt else "") +
-                             ": the buttons have expired, but the request stays open. Type `/approve` (or `/approve session`) or `/deny` there.")
-                ids += [rid, rid + ":expired"]
+            if rid not in notified:
+                lines.append(f"• **{who}** is waiting for you to {what} in {chan}" + (f": `{prompt}`" if prompt else ""))
+                ids.append(rid)
         elif r.get("event") == "kanban_blocked" and rid not in notified:
             reason = _clip(r.get("reason"), 700)
             lines.append(f"• Kanban task {r.get('task_id')} ({r.get('assignee') or 'unassigned'}) is blocked on you" + (f": {reason}" if reason else "") + f" (full card: `hermes kanban show {r.get('task_id')}`)")
@@ -89,7 +80,7 @@ def main():
         notified = set()
     lines, ids = pending(records, notified, now)
     keep = [r for r in records if now - r.get("at", now) <= KEEP]
-    live_ids = {r.get("id") for r in keep} | {f"{r.get('id')}:expired" for r in keep}
+    live_ids = {r.get("id") for r in keep}
     with open(STATE, "w") as fh:
         json.dump(sorted((notified | set(ids)) & live_ids | set(ids)), fh)
     if len(keep) != len(records):
@@ -116,11 +107,7 @@ def selftest():
     assert "<#200000000000000001>" in lines[0] and "approve a command" in lines[0]
     assert pending(recs, {"a", "kanban:t1:1"}, now)[1] == []      # announced once
     assert where("agent:main:discord:thread:9:9", "default")[0] == "assistant"
-    assert "/approve" in lines[0]                                 # first ping explains the fallback
-    late = now + BUTTONS                                          # a's buttons have expired, still unanswered
-    lines2, ids2 = pending(recs, {"a", "kanban:t1:1"}, late)
-    assert "a:expired" in ids2 and "buttons have expired" in lines2[0], lines2
-    assert "a:expired" not in pending(recs, {"a", "a:expired", "kanban:t1:1", "b"}, late)[1]   # expiry ping once
+    assert pending(recs, {"a", "kanban:t1:1"}, now + 3600)[1] == ["b"]                          # no second ping for a
     assert pending(recs, set(), now + MAX_AGE + 100)[1] == ["kanban:t1:1"]                      # past the wait: no ping
     print("approval-notify selftest ok")
 
