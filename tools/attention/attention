@@ -525,6 +525,7 @@ def selftest():
     global D, TODAY
     import tempfile
     D = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, D, True)  # selftest leaves nothing in /tmp
     om = "| abc123 | x | [assistant: asked] q |\n| def456 | x | 11-01: assistant (fixed): done |\n"
     assert unanswered(["2026-11-01 - abc123: open one", "2026-11-01 — def456 — answered", "2026-10-30 — 0e5e7f / abc123 — pair"], om) == ["2026-11-01 - abc123: open one", "2026-10-30 — 0e5e7f / abc123 — pair"]
     since = dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc).timestamp()

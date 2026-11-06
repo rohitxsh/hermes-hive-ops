@@ -122,6 +122,9 @@ def main():
             break
     if a.webui:
         systemctl("restart", "agent-worker@webui")
+    # the dashboard is a Hermes process too: without this it keeps serving pre-update code
+    if systemctl("is-active", "agent-worker@dashboard").stdout.strip() == "active":
+        systemctl("restart", "agent-worker@dashboard")
     log(f"gateway pid {old} -> {main_pid()}, {systemctl('is-active', UNIT).stdout.strip()}" + (", webui restarted" if a.webui else ""))
 
 

@@ -112,6 +112,7 @@ def selftest():
     import tempfile
     global H
     H = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, H, True)  # selftest leaves nothing in /tmp
     os.makedirs(os.path.join(H, "profiles", "jobs"))
     for db, rows in ((os.path.join(H, "state.db"), [(1, "discord", "srv / #assistant", "[Owner] hello there"),
                                                    (2, "oneshot", "", "[Question relayed ...]"),

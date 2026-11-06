@@ -47,6 +47,7 @@ if "--test" in sys.argv:
     sys.path.insert(0, str(ROOT))
     import json, os, tempfile
     os.environ["HERMES_HOME"] = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, os.environ["HERMES_HOME"], True)  # selftest leaves nothing in /tmp
     os.environ.pop("HERMES_KANBAN_TASK", None)
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb

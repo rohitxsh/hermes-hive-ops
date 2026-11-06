@@ -78,6 +78,7 @@ def register(ctx):
 def selftest():
     import tempfile
     base = tempfile.mkdtemp()
+    __import__('atexit').register(__import__('shutil').rmtree, base, True)  # selftest leaves nothing in /tmp
     os.makedirs(os.path.join(base, "profiles", "jobs"))
     now = 2_000_000_000.0
     for db, rows in ((os.path.join(base, "state.db"), [("openai-codex", 1000, 8000, 1000, now - 86400)]),
