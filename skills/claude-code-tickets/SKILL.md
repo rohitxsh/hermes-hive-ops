@@ -84,6 +84,7 @@ A scheduled run ends after its turn, and its background processes end with it, s
 
 ## When things go wrong
 
+- **CI read fails with HTTP 403 "Resource not accessible by personal access token"** (`gh pr checks`, `statusCheckRollup`): a fine-grained token can't be given the Checks permission. Read the PR head's CI from Actions instead: `gh run list --commit <head-sha>` or `gh api "repos/OWNER/REPO/actions/runs?head_sha=<sha>"`.
 - **QA card gating (Kanban):** never create the QA card with your own still-running build card in `parents`: it sits in todo until your card completes, and workers cannot unlink. Create the QA card with no parents, then `kanban_link(parent_id=<qa card>, child_id=<your card>)` so your card waits on QA.
 - **Claude Code reports a usage limit or a login error** (`is_error: true`): hand the same ticket to Codex CLI (step 4) in the same worktree, telling it to continue from what is already there, and say so. Use Claude Code again for the next ticket after its reset. If Codex is also limited or not logged in (`codex login status`), stop the queue: put the ticket back to `ready`, tell the user when the limits reset, and resume after that. Never write the code yourself instead.
 - **No completion notice arrives** (for example, the gateway restarted and the run was lost): on your next turn, check for `in-progress` issues. If one has a PR, review it. If not, remove its worktree and branch and start that ticket again.
