@@ -4,7 +4,7 @@
 Hermes install into an always-on team of agents on a small Linux VM: several profiles behind one gateway (Discord),
 Kanban that repairs its own stuck cards, shared agent rules kept in one place (the `ops-core` plugin), scheduled
 maintenance, safer approvals, memory that learns, and fixes for problems hit in daily use.
-It is one way of running Hermes, not the only one. Everything here ran in production on Hermes **v0.22.6**.
+It is one way of running Hermes, not the only one. Everything here ran in production on Hermes **v0.23.0**.
 
 ## Quick start (from a vanilla Hermes install)
 
@@ -23,7 +23,10 @@ Every step is idempotent and keeps a backup of what it changes (`*.bak-kit`). Ru
 tells you when an update dropped a patch). Since v0.22.6 the built-in browser tools are gone from core: Camofox is the
 catalog plugin `camofox` (Hermes installs it for homes that use Camofox), and a home that had `browser.backend: off`
 needs `agent.disabled_toolsets: [browser]` to stay browser-free. An update or a plugin install can re-sync Hermes's venv
-and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it).
+and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it). uv's
+`exclude-newer` cutoff can refuse a library version newer than the Hermes release; reinstall with
+`--exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`. A `.patch` file that adds a new file leaves it behind as untracked
+when you reset the tree for an update; move it aside before `git apply`, or the patch is refused.
 Before changing the kit, run `setup/test-vanilla.sh`: it installs the kit twice into a throwaway home holding
 vanilla Hermes and checks patches, tools, jobs and the self-check, without touching your real `~/.hermes`.
 
@@ -72,21 +75,22 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |
 | `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones | PRs #148610, #148611 |
 | `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written | issue #109453 |
-| `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files mid-backup; any other missing file still fails it | PR #147369 (open) |
+| `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files, or a Kanban worker its scratch files, mid-backup; any other missing file still fails it | PR #147369 (open) |
 | `md-as-pdf-apply.py` | Every Markdown attachment (chat replies, scheduled and Kanban deliveries) goes out as its formatted PDF via `md-pdf`, so people get one readable file; falls back to the `.md` on failure | none (needs the local `md-pdf`) |
 | `kanban-wake-only-apply.py` | Kanban subscriptions made from a chat wake the agent instead of posting raw pings with card IDs and re-uploading files named in completion summaries; switch existing ones with `hermes kanban notify-subscribe … --delivery-mode wake` | issue #147262, PR #139034 |
 | `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` | PR #145090 (open) |
 | `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) | PR #148598 |
 | `kanban-pr-guard-author-apply.py` | The duplicate-PR guard (`active_pr`) counts only PR links in comments by the card's own assignee, so a PM or reviewer citing a PR no longer holds an unrelated ready card for 24 h ("kanban dispatcher stuck") | PR #146075 (open) |
+| `guardian-filter-retry-apply.py` (+ test) | When a provider's content filter blanks the smart-approval guardian's one-word verdict, the profile's first fallback provider is asked once instead of escalating (an escalation in an unattended run is a refusal). Pair it with `auxiliary.approval.fallback_chain` set to that same provider, so a provider outage doesn't escalate everything either | none yet |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) | PRs #98873 (cron), #135169 (verdict parsing) |
 | `discord-slash-auth-late-dependency.patch`, `team-notification-here.patch` | Slash-command auth with a late dependency; opt-in team `@here` notifications, and a leading `@silent` sends a post without a push or sound (keep text on the same line, e.g. `@silent **Report**`: cron reads a lone `@silent` line as `[SILENT]` and posts nothing) (`git apply`; made against v0.22.6) | PR #146972; `@silent`: issue #148594 |
 
 Drop a patch once its upstream fix is in the Hermes release you run (each patch's `--check` then reports the anchor missing, and the health check flags it).
 
 ### `plugins/`
-`outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval; digits inside commit SHAs and other hex IDs don't count), `approval-notify`, `ask-assistant` (a locked
+`outbound-guard` (card/Aadhaar/PAN leaving the machine needs approval; digits inside commit SHAs and other hex IDs, and `YYYYMMDD-HHMM` file and folder stamps, don't count), `approval-notify`, `ask-assistant` (a locked
 profile can ask the admin profile), `token-usage`, `quota-alert`, `codex-usage-alert`, `llm-pacer`, `searxng-tuned`,
-`local-extract`, `vault-guard`, `quota-retry` (a chat message that failed because every provider was out of quota is retried once quota is back, or the agent asks first if tools had already run; needs `plugins.entries.quota-retry.allow_gateway_injection: true`), `ops-core` (the orchestration plugin, enabled in every profile: shared SOUL rules kept in one place (rule files in `plugins/ops-core/rules/` plus your own in `~/agents/rules/`, written into one managed block per SOUL by `hermes ops-rules apply`; `check` reports drift; the shipped rules include plain summaries on top of the detail, catch-ups for returning people, self-contained messages, feature tips, unique scratch-file names (so a run never ends on a refused overwrite), and asking a person only when absolutely required: one approval covers retries, and a false positive from the machine's own checks is fixed rather than approved call by call); `hermes ops <tool>` runs the kit's tools (doctor, pending, issues, attention, board-sync, feeds, quota); a newly stuck Kanban card starts the `kanban doctor` job within about five minutes instead of waiting for its half-hourly run; and a message that starts with @someone else is left to that person, as a fallback for the `leading-mention` patch).
+`local-extract`, `vault-guard`, `quota-retry` (a chat message that failed because every provider was out of quota is retried once quota is back, or the agent asks first if tools had already run; needs `plugins.entries.quota-retry.allow_gateway_injection: true`), `ops-core` (the orchestration plugin, enabled in every profile: shared SOUL rules kept in one place (rule files in `plugins/ops-core/rules/` plus your own in `~/agents/rules/`, written into one managed block per SOUL by `hermes ops-rules apply`; `check` reports drift; the shipped rules include plain summaries on top of the detail, catch-ups for returning people, self-contained messages, feature tips, unique scratch-file names (so a run never ends on a refused overwrite), asking a person only when absolutely required: one approval covers retries, and a false positive from the machine's own checks is fixed rather than approved call by call, the admin assistant doing whatever the owner asks on the machine (the owner's newer instruction replaces an older rule), and handling a model's false-positive safety refusal: retry once reworded, then the other coding CLI, then skip only the refused part and record it; a guardian-refused script is redone step by step with normal tools); `hermes ops <tool>` runs the kit's tools (doctor, pending, issues, attention, board-sync, feeds, quota); a newly stuck Kanban card starts the `kanban doctor` job within about five minutes instead of waiting for its half-hourly run; and a message that starts with @someone else is left to that person, as a fallback for the `leading-mention` patch).
 
 ### `tools/` and `bin/`
 `attention` (`waiting-on-me`, `follow-up`, `renewals`, and `pr-resume`: a blocked Kanban card resumes by itself once its PR is approved or merged, or with a review-feedback note when a reviewer requests changes; list the agents' own GitHub logins in `~/agents/attention/config.json` `agent_github_logins` to also wake on human comments), `memory-learn` (set `HERMES_OWNER_USER_ID`), `memory-export`,
