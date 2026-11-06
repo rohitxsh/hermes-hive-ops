@@ -71,8 +71,6 @@ grep -q AGENT_REACH_LANG "$HOME/.profile" 2>/dev/null || echo 'export AGENT_REAC
 echo "== markitdown 0.1.9 (document to Markdown, for the markitdown skill)"
 [ -n "$UV" ] && "$UV" tool install -q "markitdown[all]==0.1.9" && echo "  ok"
 
-echo "== Optional web UIs (pinned): run setup/services with webui / workspace / dashboard afterwards"
-echo "  git clone https://github.com/nesquena/hermes-webui ~/hermes-webui && git -C ~/hermes-webui checkout v0.52.544"
-echo "  git clone https://github.com/outsourc-e/hermes-workspace ~/hermes-workspace && git -C ~/hermes-workspace checkout v2.3.0 && (cd ~/hermes-workspace && pnpm install && pnpm build)"
+echo "== Web UIs: Hermes's own Webapp (9120) and dashboard (9119); set their sign-ins with tools/ui-password/ui-password"
 echo "== Optional hub skills (per profile): hermes -p <profile> skills install skills-sh/supabase/agent-skills/skills/supabase"
 echo "   and the Flutter/Dart set: skills-sh/flutter/agent-plugins/skills/<skill>"
