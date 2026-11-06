@@ -120,7 +120,7 @@ def main():
         new = main_pid()
         if new not in (old, "", "0"):
             break
-    if a.webui:
+    if a.webui and systemctl("is-enabled", "agent-worker@webui").stdout.strip() == "enabled":  # never revive a removed WebUI
         systemctl("restart", "agent-worker@webui")
     # the dashboard is a Hermes process too: without this it keeps serving pre-update code
     if systemctl("is-active", "agent-worker@dashboard").stdout.strip() == "active":

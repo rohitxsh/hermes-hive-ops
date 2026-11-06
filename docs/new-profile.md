@@ -18,7 +18,7 @@ cp -a --update=none ~/.hermes/profiles/<source>/plugins/. ~/.hermes/profiles/<na
 mkdir -p ~/work/<name>
 hermes --profile <name> config set terminal.cwd ~/work/<name>
 ```
-The clone copies config.yaml, .env, SOUL.md and skills. Its config already carries the house settings (fallback chain, `secrets.command`, smart approvals with the owner policy and deny rules, 3 h approval timeout, 15 min Discord buttons, queue mode, compression, searxng-tuned and local-extract, Discord display settings); keep them.
+The clone copies config.yaml, .env, SOUL.md and skills. Its config already carries the house settings (fallback chain, `secrets.command`, smart approvals with the owner policy and deny rules, 3 h approval timeout, Discord buttons that last as long as the request, queue mode, compression, searxng-tuned and local-extract, Discord display settings); keep them.
 
 ## 3. Fix the .env (each profile gets ONLY its own .env, never the service environment)
 - **Discord settings:** the clone drops these; copy them from the source and point them at the new channel:

@@ -23,6 +23,25 @@ def sub(path, old, new):
 
 
 changed = []
+# 2026-11-06 (0.23.0, upstream #141377): every unapproved finding counts, not just detect_dangerous_command's first
+# match, so a permanently approved first rule can't hide a credential upload. Upgrade installs patched before that.
+_OLD_SMART = f'''    if mode == "smart":  # {MARK}
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if not is_dangerous or _is_permanently_approved(pattern_key):
+            return None
+        from tools.approval_smart import _smart_verdict
+        if _smart_verdict(command, description, pattern_key, [pattern_key], get_current_session_key()) == "approve":'''
+_NEW_SMART = f'''    if mode == "smart":  # {MARK}
+        pending = _unapproved_findings(command, _is_permanently_approved)  # all findings, as deny mode checks
+        if pending is None:
+            return None
+        keys, description = pending
+        from tools.approval_smart import _smart_verdict
+        if _smart_verdict(command, description, keys[0], keys, get_current_session_key()) == "approve":'''
+_p = pathlib.Path("tools/approval.py")
+if _OLD_SMART in _p.read_text():
+    _p.write_text(_p.read_text().replace(_OLD_SMART, _NEW_SMART))
+    changed.append(True)
 changed.append(sub("tools/approval_context.py",
     '        return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"',
     f'        if mode == "smart":  # {MARK}: guardian decides, escalations are refused' + NL +
@@ -34,12 +53,7 @@ changed.append(sub("tools/approval.py",
         return None''',
     f'''    """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     mode = ctx.mode()
-    if mode == "smart":  # {MARK}
-        is_dangerous, pattern_key, description = detect_dangerous_command(command)
-        if not is_dangerous or _is_permanently_approved(pattern_key):
-            return None
-        from tools.approval_smart import _smart_verdict
-        if _smart_verdict(command, description, pattern_key, [pattern_key], get_current_session_key()) == "approve":
+{_NEW_SMART}
             return None
         return {{"approved": False, "message": ctx.block_message(
             f"Command flagged as dangerous ({{description}}) and the smart guardian did not approve it for an unattended run",
