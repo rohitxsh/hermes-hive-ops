@@ -77,7 +77,19 @@ def _profile_state():
     return state
 
 
+def _silent(text):
+    """A [SILENT] / NO_REPLY reply must stay silent: a note after it would turn it into a delivered message."""
+    try:
+        from gateway.response_filters import is_autonomous_silence_response  # Hermes's own cron/webhook matcher
+        return is_autonomous_silence_response(text)
+    except Exception:
+        lines = [l.strip().upper() for l in str(text or "").splitlines() if l.strip()]
+        return bool(lines) and "[SILENT]" in (lines[0], lines[-1])
+
+
 def transform_llm_output(response_text="", **kwargs):
+    if _silent(response_text):
+        return None
     try:
         import quota_lib as q
         providers, auto = _profile_state()
@@ -92,3 +104,11 @@ def transform_llm_output(response_text="", **kwargs):
 
 def register(ctx):
     ctx.register_hook("transform_llm_output", transform_llm_output)
+
+
+if __name__ == "__main__":  # selftest: python3 __init__.py (from the Hermes checkout, so the real matcher is used)
+    assert _silent("Nothing is pending and no warning review is due.\n\n[SILENT]")
+    assert _silent("[SILENT]") and _silent("NO_REPLY")
+    assert not _silent("Two cards are waiting for you.") and not _silent("this is not [SILENT] mid-sentence")
+    assert transform_llm_output("Done.\n\n[SILENT]") is None
+    print("quota-alert selftest ok")
