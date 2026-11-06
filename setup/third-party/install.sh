@@ -42,12 +42,14 @@ NODE=$(ls -d "$HH"/tools/node-*/bin 2>/dev/null | tail -1)
 mkdir -p "$HOME/camofox" && cd "$HOME/camofox" && [ -f package.json ] || printf '{"dependencies":{"@askjo/camofox-browser":"1.18.1"},"overrides":{"playwright-core":"1.63.0"}}\n' > package.json
 PATH="$NODE:$PATH" npm install --no-audit --no-fund >/dev/null 2>&1 && echo "  ok" || echo "  npm install failed in ~/camofox"
 
-echo "== hermes-talk 0.22.1 (realtime voice on the ChatGPT subscription) and memory-wiki (dashboard tab), every profile"
+echo "== hermes-talk 0.22.1 (realtime voice on the ChatGPT subscription), memory-wiki (dashboard tab) and camofox (browser tools), every profile"
 # Talk ships a pyproject.toml named "hermes-talk"; all profiles share one venv workspace, so a second profile's copy
 # collides ("Two workspace members are both named hermes-talk"). Profile copies don't need it (its deps are core).
 for d in "$HH" "$HH"/profiles/*; do [ -f "$d/config.yaml" ] || continue; n=$(basename "$d"); P=(); [ "$d" = "$HH" ] || P=(-p "$n")
   [ -d "$d/plugins/hermes-talk" ] || "$HERMES" "${P[@]}" plugins install hermes-talk --no-deps </dev/null >/dev/null 2>&1
   [ -d "$d/plugins/memory-wiki" ] || "$HERMES" "${P[@]}" plugins install hermes-memory-wiki --no-deps </dev/null >/dev/null 2>&1
+  # browser tools for Camofox (left core in 0.23.0); Hermes adds it only to homes migrated from older versions
+  [ -d "$d/plugins/camofox" ] || "$HERMES" "${P[@]}" plugins install camofox --ref 1138f25c8b7b5a8fb882b3161e248f29abbd1a46 --no-enable </dev/null >/dev/null 2>&1
   if [ "$d" != "$HH" ] && [ -f "$d/plugins/hermes-talk/pyproject.toml" ]; then
     mkdir -p "$HOME/agents/src/talk-pyproject-aside/$n" && mv "$d/plugins/hermes-talk/pyproject.toml" "$HOME/agents/src/talk-pyproject-aside/$n/"; fi
   for pl in hermes-talk memory-wiki; do "$HERMES" "${P[@]}" plugins enable "$pl" --no-allow-tool-override </dev/null >/dev/null 2>&1 || echo "  enable $pl in $n failed"; done

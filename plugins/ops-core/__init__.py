@@ -128,7 +128,22 @@ def _cli(args) -> int:
     changed = run(args.action, args.dry_run)
     verb = "would update" if args.action == "check" or args.dry_run else "updated"
     print(f"{verb} {len(changed)} SOUL(s)" + (": " + ", ".join(changed) if changed else ""))
+    if args.action == "apply" and not args.dry_run:
+        _refresh_sessions(changed)
     return 1 if args.action == "check" and changed else 0
+
+
+def _refresh_sessions(profiles):
+    """Continuing sessions pick up the new SOUL on their next turn (Hermes >= 0.23.0), instead of only after /new."""
+    exe = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
+    for p in profiles:
+        try:
+            r = subprocess.run([exe, *([] if p == "default" else ["-p", p]), "sessions", "refresh-prompts"],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode:
+                print(f"  {p}: sessions refresh-prompts failed (rc {r.returncode}); sessions keep the old SOUL until /new")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"  {p}: sessions refresh-prompts not run ({e.__class__.__name__}); sessions keep the old SOUL until /new")
 
 
 def _check_once():

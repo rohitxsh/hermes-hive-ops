@@ -21,7 +21,7 @@ hermes-restart-idle                                   # restart the gateway when
 Every step is idempotent and keeps a backup of what it changes (`*.bak-kit`). Run a single step with
 `--steps patches,config`. After every `hermes update`, run `setup/install.sh --steps patches` (the daily self-check
 tells you when an update dropped a patch). Since v0.22.6 the built-in browser tools are gone from core: Camofox is the
-catalog plugin `camofox` (Hermes installs it for homes that use Camofox), and a home that had `browser.backend: off`
+catalog plugin `camofox` (Hermes adds it only to homes it migrates, so `--steps third-party` installs it in every profile and the overlay turns off `browser_exec`), and a home that had `browser.backend: off`
 needs `agent.disabled_toolsets: [browser]` to stay browser-free. An update or a plugin install can re-sync Hermes's venv
 and drop the document libraries; `setup/install.sh --steps third-party` puts them back (the self-check reports it). `hermes plugins update` re-syncs the venv the same way, so check the libraries after it too. uv's
 `exclude-newer` cutoff can refuse a library version newer than the Hermes release; reinstall with

@@ -4,6 +4,7 @@ agent:
   max_turns: 500                    # inactivity, not wall-clock, ends a turn; long tasks need room
   reasoning_effort: high
   restart_drain_timeout: 60
+  disabled_toolsets: [browser]      # browser_exec off: the camofox plugin's browser_* tools drive Camofox
 approvals:
   mode: smart                       # a model judges each risky command against smart_policy
   cron_mode: smart
@@ -50,7 +51,8 @@ memory:
   user_char_limit: 2750
 plugins:
   enabled: [approval-notify, claude-subscription-directsdk-experimental, llm-pacer, local-extract, outbound-guard,
-            quota-alert, searxng-tuned, token-usage, holographic, ops-core]
+            quota-alert, searxng-tuned, token-usage, holographic, ops-core, camofox, quota-retry, hermes-talk,
+            memory-wiki]                    # merge replaces this list, so every kit plugin is named here
 web:
   search_backend: searxng-tuned     # set SEARXNG_URL in each profile's .env
   extract_backend: local-extract
