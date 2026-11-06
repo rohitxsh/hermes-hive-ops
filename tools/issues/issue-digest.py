@@ -165,7 +165,20 @@ DEFAULT_KNOWN = (r"^gateway\.run: --replace target PID [0-9]+ is the host gatewa
                  r"^gateway\.session_authority: Session \S+ paused: runtime_draining",
                  # the optional JS-dialog watcher gave up attaching to a slow page within 10 s; the browser call carries on
                  # (non-fatal by design). Only the empty-message timeout form: a crash with error text still surfaces.
-                 r"^tools\.browser_supervisor: CDP supervisor \S+ crashed: $")
+                 r"^tools\.browser_supervisor: CDP supervisor \S+ crashed: $",
+                 # restart noise: a worker's pipe closes when the gateway stops; a missed cron slot is re-run by itself
+                 r"^gateway\.session_managed_worker: Managed worker lost: EOFError$",
+                 r"^cron\.jobs: Job .* was taken off the schedule but never claimed \(scheduler stopped before dispatch\); restoring it",
+                 # first strikes and retries that recover on their own; a second strike or a final failure still surfaces
+                 r"^hermes_plugins\.platforms__discord\.adapter: \[Discord\] Discord Gateway WebSocket unhealthy \(\w+, 1/2\)",
+                 r"^agent\.codex_runtime: Codex zero-event retry \(attempt 1/2\)",
+                 r"^agent\.chat_completion_helpers: Streaming failed before delivery: Incomplete upstream response",
+                 r"^agent\.chat_completion_helpers: Fallback skip: chain entry \S+ resolves to the same backend as the current one",
+                 r"^agent\.conversation_loop: Thinking block signature recovery: suppressed rejected Anthropic replay blocks",
+                 r"^agent\.relay_runtime: Skipping Relay instrumentation for concurrent Hermes turn",
+                 # a Kanban card's workspace was cleaned up after it finished; voice is optional
+                 r"^agent\.runtime_cwd: (TERMINAL_CWD|configured working directory) does not exist: \S*/\.hermes/kanban/workspaces/",
+                 r"^hermes_plugins\.platforms__discord\.adapter: Opus codec not found")
 
 
 def known_patterns():

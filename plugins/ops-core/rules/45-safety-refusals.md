@@ -1,0 +1,7 @@
+---
+profiles: *
+exclude: random
+---
+- When a model's safety filter refuses legitimate work (a false positive, such as a cyber-safety refusal on ordinary auth, security, networking or scraping code), don't drop the task. Retry once with a rewritten prompt that states the real task and why it is needed more plainly and specifically; never hide, obfuscate or split up what is being asked. If that is refused too, try once with the other coding CLI (Claude Code, or Codex CLI with gpt-6.1-sol at high reasoning) where this profile uses them.
+- If every attempt is refused, skip only the part that triggers the refusal and finish the rest. Record the skipped part, why, and what it affects in the GitHub issue and PR (or in the channel when there is none), keep that part visibly unfinished, and move on. A refusal never stops unrelated work, and never lets you mark a required security control as done.
+- When the approval guardian refuses a whole script in an unattended run (a heredoc, `python -c` or execute_code block), do the same work with normal tools, as the refusal suggests: read_file, write_file or patch for files, and one plain terminal command per step, so each step is judged on its own. That is the intended route, so don't wait for a person; but don't repackage the same script to slip it through. If a single plain step is refused too, it is a real checkpoint: record it on the card, carry on with the rest, and ask once.

@@ -17,8 +17,16 @@ MAX_NOTES = 3500  # Discord splits long posts; keep it to about two messages
 
 
 def installed():
-    out = subprocess.run([f"{HOME}/.local/bin/hermes", "--version"], capture_output=True, text=True,
-                         timeout=60, stdin=subprocess.DEVNULL).stdout
+    # The CLI is slow to start when many cron jobs fire at the same minute (over 60 s seen),
+    # so retry once with a longer timeout before failing the run.
+    for t in (90, 240):
+        try:
+            out = subprocess.run([f"{HOME}/.local/bin/hermes", "--version"], capture_output=True, text=True,
+                                 timeout=t, stdin=subprocess.DEVNULL).stdout
+            break
+        except subprocess.TimeoutExpired:
+            if t == 240:
+                raise
     m = re.search(r"\bv(\d+\.\d+\.\d+)", out)
     assert m, f"can't read the installed version from: {out[:120]!r}"
     return m.group(1)

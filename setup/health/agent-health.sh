@@ -24,13 +24,15 @@ done
 out=$("$HOME/.local/bin/hermes" ops-rules check 2>/dev/null | tail -1)
 case "$out" in "would update 0 SOUL(s)"|"") ;; *) p+=("shared SOUL rules out of date ($out): run hermes ops-rules apply");; esac
 # scheduled jobs failing in any profile
-while IFS= read -r line; do [ -n "$line" ] && p+=("$line"); done < <(python3 - <<'PY'
+while IFS= read -r line; do [ -n "$line" ] && p+=("$line"); done < <(/usr/bin/python3 - <<'PY'   # system python: PyYAML-free, and a bare python3 under cron can be Hermes's own
 import glob, json, os
 H = os.path.expanduser("~/.hermes")
 for jf in [f"{H}/cron/jobs.json"] + glob.glob(f"{H}/profiles/*/cron/jobs.json"):
     prof = "default" if jf.startswith(f"{H}/cron") else jf.split("/")[-3]
     d = json.load(open(jf)); d = d["jobs"] if isinstance(d, dict) else d
     for j in d:
+        if j.get("name") == "self-check":   # its own failure reaches the issue digest as a failed job; listing it here repeats it every day
+            continue
         if j.get("enabled", True) and j.get("state") != "paused" and (j.get("failure_streak") or 0) > 0:
             print(f"{prof}: scheduled job '{j['name']}' ({j['id']}) failing: {j.get('last_status')}, {j['failure_streak']} in a row")
 PY

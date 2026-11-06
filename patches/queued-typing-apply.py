@@ -10,18 +10,13 @@ from pathlib import Path
 
 F = Path.home() / ".hermes/hermes-agent/gateway/run_turn.py"
 MARK = "local patch (2026-11-03): queued-turn typing restart"
+# anchor on the comment + guard only: v0.23.0 reworded the send_typing call below it (typing_metadata_for_turn)
 OLD = '''        # Restart the typing indicator; the outer typing task may be stale.
         if _clear_adapter:
-            with suppress(Exception):
-                await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 '''
-NEW = f'''        # Restart the typing indicator; the outer typing task may be stale.
-        if _clear_adapter:
-            with suppress(Exception):
+NEW = OLD + f'''            with suppress(Exception):
                 # {MARK}: Discord's send_typing is a no-op while its loop runs.
                 await _clear_adapter._stop_typing_quietly(source.chat_id, _status_thread_metadata)
-            with suppress(Exception):
-                await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 '''
 t = F.read_text(encoding="utf-8")
 if "--check" in sys.argv:

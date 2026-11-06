@@ -49,6 +49,17 @@ def _card_prefix(d):
         d[0] == "4" or 51 <= int(d[:2]) <= 55 or 2221 <= int(d[:4]) <= 2720 or d[:4] == "6011" or d[:2] in ("65", "60", "35", "81", "82")))
 
 
+def _date_stamp(s):
+    """YYYYMMDD-HHMM / YYYYMMDDHHMM file and folder stamps; Aadhaar numbers written spaced (4 4 4) are still checked."""
+    if not re.fullmatch(r"20\d{6}-?\d{4}", s):
+        return False
+    try:
+        time.strptime(s[:8] + s[-4:], "%Y%m%d%H%M")
+        return True
+    except ValueError:
+        return False
+
+
 def find(text):
     """[(kind, masked)] for sensitive-looking values in text."""
     out = []
@@ -58,7 +69,7 @@ def find(text):
             out.append(("payment card number", f"****{d[-4:]}"))
     for m in AADHAAR.finditer(text):
         d = re.sub(r"\D", "", m.group())
-        if len(d) == 12 and len(set(d)) > 1 and _verhoeff(d):
+        if len(d) == 12 and len(set(d)) > 1 and _verhoeff(d) and not _date_stamp(m.group()):
             out.append(("Aadhaar number", f"********{d[-4:]}"))
     for m in PAN.finditer(text):
         out.append(("PAN", f"{m.group()[:2]}*******{m.group()[-1]}"))
@@ -106,6 +117,9 @@ if __name__ == "__main__":
     assert find("discord:200000000000000002 thread 200000000000000003") == []   # Discord IDs
     assert find("aadhaar 2341 2341 2346") and find("aadhaar 2341 2341 2346")[0][0] == "Aadhaar number"
     assert find("head 9f2ab234123412346cd41f and 4111111111111111e0a") == []     # hex SHAs
+    assert find("cp -r qa/pr38-evidence-20261106-0006/ x && 202611060006.png") == []   # date-time stamps
+    assert find("aadhaar 2026 1106 0006")[0][0] == "Aadhaar number"                    # same digits, spaced: checked
+    assert find("aadhaar 2026-1106-0006") and find("id 202613060001")                  # not a stamp / no 13th month
     assert find("PAN ABCPE1234F") == [("PAN", "AB*******F")]
     assert find("ticket 1793531152 and ts 1793473582.3978465") == []
     assert pre_tool_call("send_message", {"message": "my card 4111111111111111"})["action"] == "approve"
