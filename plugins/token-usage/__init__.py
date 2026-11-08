@@ -1,4 +1,4 @@
-"""token-usage: send "tokens" (or /tokens) in any chat to get this VM's model token use, lifetime and last 30 days,
+"""token-usage: send "tokens" (or /tokens) in any chat to get this machine's model token use, lifetime and last 30 days,
 from every profile's session history. Answered by the gateway itself: no model call, so it costs nothing and works
 even when every provider is used up. Counts every call Hermes made (chats, cron, compression, approval checks)."""
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _rewrite(event=None, **_kwargs):
 
 
 def register(ctx):
-    ctx.register_command("tokens", _command, description="Model token use on this VM: lifetime and last 30 days")
+    ctx.register_command("tokens", _command, description="Model token use on this machine: lifetime and last 30 days")
     ctx.register_hook("pre_gateway_dispatch", _rewrite)
 
 

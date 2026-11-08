@@ -1,5 +1,5 @@
-"""outbound-guard (2026-11-01, the owner: Duet-inspired leak guard). A pre_tool_call hook: when a tool call that sends data
-off this VM (messages, browser typing/navigation/scripts, web searches, network commands, network code) contains what
+"""outbound-guard: a pre_tool_call leak guard: when a tool call that sends data
+off this machine (messages, browser typing/navigation/scripts, web searches, network commands, network code) contains what
 looks like a payment card number (Luhn-valid, known prefixes), an Aadhaar number (Verhoeff-valid) or a PAN, Hermes asks
 the owner for approval first (fail-closed: unattended runs are blocked). browser_vault fills are not checked: the agent
 never sees those values. Bank account numbers have no reliable pattern and are not checked. Matches are logged masked
