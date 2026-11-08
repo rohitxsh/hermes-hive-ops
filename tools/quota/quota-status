@@ -53,7 +53,7 @@ def main():
     wrap = q.wrap_up(providers, capped, getu, cp) if ok else ""
     print("Scheduled work: " + (f"wrapping up ({wrap})" if wrap else "running" if ok else f"paused ({why})"))
     if capped:
-        print(f"Auto-mode caps: scheduled work stops at {q.AUTO_CAP:.0f}% of the second provider's 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit; "
+        print(f"{'Quota caps (auto mode on or off)' if q.ALL_MODES else 'Auto-mode caps'}: scheduled work stops at {q.AUTO_CAP:.0f}% of the second provider's 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit; "
               "Claude Code runs share the Claude limit.")
         if cp:
             print(f"This profile also caps {', '.join(cp)} wherever it sits in the chain (quota-caps.json cap_providers).")

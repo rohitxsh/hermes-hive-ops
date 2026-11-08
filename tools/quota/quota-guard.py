@@ -3,7 +3,7 @@
 
 For every profile it applies quota_lib.run_allowed to the profile's own model chain: scheduled agent
 jobs keep running on the first two providers and pause when they would fall to the third; a profile in
-auto mode also pauses once the second provider reaches the auto-mode caps (70% of its 5-hour window, 80% weekly). Kanban
+auto mode (or every mode, with a machine's all_modes caps) also pauses once the second provider reaches the caps (quota_lib) Kanban
 workers of paused profiles stop being dispatched (kanban.dispatch_profiles). Everything it paused is
 resumed when the limits allow again (auto-mode jobs only while auto mode is still on); jobs paused by
 hand are never touched. Before a pause it posts one wrap-up notice for profiles with scheduled work (quota_lib.wrap_up), and a

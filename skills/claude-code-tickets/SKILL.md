@@ -24,7 +24,7 @@ If your SOUL names a GitHub Project board, add each ticket to it (`gh project it
 
 ## 2. Hand off one ticket at a time
 
-Before starting a Claude Code run, check `quota-status --gate --claude-code`. If it says paused (Claude is used up, or too close to the limit to start a run, or this profile is in auto mode and Claude is at its 70% 5-hour or 80% weekly cap), check `quota-status --gate` (the Codex side); if that says ok, run the ticket with Codex CLI instead. If both are paused, don't start; say when it will be possible.
+Before starting a Claude Code run, check `quota-status --gate --claude-code`. If it says paused (Claude is used up, or too close to the limit to start a run, or Claude is at the quota cap that applies to this profile), check `quota-status --gate` (the Codex side); if that says ok, run the ticket with Codex CLI instead. If both are paused, don't start; say when it will be possible.
 
 Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed. Never run two Claude Code tickets at once.
 

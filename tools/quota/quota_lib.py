@@ -13,6 +13,9 @@ Policy (owner's rules, 2026-10-25):
   owner 2026-10-26), whether or not its auto mode is on (`caps()`). Its "cap_providers" list (e.g. ["claude"]) also caps
   those providers wherever they sit in the chain: when the provider that would answer is one of them and has reached a
   cap, scheduled work pauses (for example a profile whose chain starts with Claude).
+- A machine can set its own caps in ~/agents/quota-caps.json, e.g. {"five_hour": 95, "weekly": 95, "all_modes": true,
+  "wrap_margin": 3}: the percentages work stops at, the wrap-up margin, and with all_modes the caps apply to every
+  profile whether auto mode is on or off. ~/agents/quota-no-caps (older switch) turns the caps off: work runs until used up.
 - Before a pause, work gets a wrap-up warning: once the profile is within WRAP_MARGIN points of the point
   where it would pause, `quota-status --gate` says "wrap up" so runs finish their step and save a handoff.
 Nothing here is tied to particular providers: rules follow chain positions (first, second, third).
@@ -42,6 +45,26 @@ NO_CAPS = os.path.exists(os.path.join(HOME, "agents", "quota-no-caps"))
 WRAP_MARGIN = 10.0       # points before a pause point at which scheduled work is told to wrap up
 FAIL_WINDOW = 3600       # seconds a provider Hermes gave up on in a profile counts as used up there
 EXHAUSTED = 99.5         # a window at or above this is used up
+ALL_MODES = False        # machine caps apply with auto mode off too (quota-caps.json "all_modes")
+
+
+def machine_caps(cfg):
+    """Apply a machine's ~/agents/quota-caps.json (see the module doc); quota-no-caps lifts the caps to 'used up'."""
+    global AUTO_CAP, WEEKLY_CAP, WRAP_MARGIN, ALL_MODES
+    AUTO_CAP = float(cfg.get("five_hour", AUTO_CAP))
+    WEEKLY_CAP = float(cfg.get("weekly", WEEKLY_CAP))
+    WRAP_MARGIN = float(cfg.get("wrap_margin", WRAP_MARGIN))
+    ALL_MODES = bool(cfg.get("all_modes", ALL_MODES))
+    if NO_CAPS:
+        AUTO_CAP = WEEKLY_CAP = EXHAUSTED
+
+
+try:
+    with open(os.path.join(HOME, "agents", "quota-caps.json")) as _fh:
+        machine_caps(json.load(_fh) or {})
+except (OSError, ValueError):
+    machine_caps({})
+
 AUTO_FILE = "auto-mode.json"
 AUTO_JOB = "Auto mode"
 CLAUDE_PLUGIN = os.path.join(HERMES_DIR, "plugins", "claude-subscription-directsdk-experimental")
@@ -137,7 +160,7 @@ def caps_always(home):
 
 def caps(home):
     """Whether the auto-mode caps apply to this profile: auto mode is on, or the caps are always on."""
-    return auto_mode(home) or caps_always(home)
+    return ALL_MODES or auto_mode(home) or caps_always(home)
 
 
 def cap_providers(home):
@@ -281,6 +304,10 @@ def usage(provider, fresh=False, allow_fetch=True):
 
 def used_up(windows):
     return [w for w in windows or [] if w["used"] >= EXHAUSTED]
+
+
+def pauser():
+    return "work pauses" if ALL_MODES else "auto mode pauses"
 
 
 def five_hour(windows):
@@ -434,9 +461,9 @@ def wrap_up(providers, auto, getu, capped=()):
         if auto and k == 1:
             w = five_hour(ws)
             if w and w["used"] >= AUTO_CAP - WRAP_MARGIN:
-                return f"{name}'s 5-hour window is at {w['used']:.0f}% (auto mode pauses at {AUTO_CAP:.0f}%)"
+                return f"{name}'s 5-hour window is at {w['used']:.0f}% ({pauser()} at {AUTO_CAP:.0f}%)"
             w = next((w for w in ws if w["label"].endswith("weekly") and w["used"] >= WEEKLY_CAP - WRAP_MARGIN), None)
-            return f"{name}'s {w['label']} limit is at {w['used']:.0f}% (auto mode pauses at {WEEKLY_CAP:.0f}%)" if w else ""
+            return f"{name}'s {w['label']} limit is at {w['used']:.0f}% ({pauser()} at {WEEKLY_CAP:.0f}%)" if w else ""
         w = next((w for w in ws if w["used"] >= EXHAUSTED - WRAP_MARGIN), None)
         return f"{name}'s {w['label']} limit is at {w['used']:.0f}%" if w else ""
 
@@ -462,8 +489,8 @@ def selftest_model_scoped():
 
 
 def selftest():
-    global NO_CAPS
-    NO_CAPS = False  # the selftest checks the cap logic itself
+    global NO_CAPS, AUTO_CAP, WEEKLY_CAP, WRAP_MARGIN, ALL_MODES
+    NO_CAPS, AUTO_CAP, WEEKLY_CAP, WRAP_MARGIN, ALL_MODES = False, 70.0, 80.0, 10.0, False  # check the default cap logic
     selftest_model_scoped()
     full = lambda p: [_window("5-hour", 100.0, "z")]
     ok, why = run_allowed(["openai-codex"], False, full)                  # a one-provider chain that is used up
@@ -540,6 +567,19 @@ def selftest():
     assert pool_windows(exhausted_pool, 1000.0)[0]["used"] == 100.0
     assert pool_windows(exhausted_pool, 3000.0)[0]["used"] == 0.0
     assert chain(cfg={"model": {"provider": "a"}, "fallback_providers": [{"provider": "b"}, {"provider": "a"}]}) == ["a", "b"]
+    machine_caps({"five_hour": 95, "weekly": 95, "all_modes": True, "wrap_margin": 3})    # a machine's own caps
+    os.remove(os.path.join(home, CAPS_FILE))
+    assert caps(home) and not auto_mode(home)                                 # all_modes: caps on with auto mode off
+    w93 = [_window("5-hour", 10, None), _window("weekly", 93, None)]
+    w96 = [_window("5-hour", 10, None), _window("weekly", 96, None)]
+    assert run_allowed(c, caps(home), fake({"openai-codex": out5, "claude": w81}))[0]      # 81% weekly: keeps working
+    assert not wrap_up(c, caps(home), fake({"openai-codex": out5, "claude": w81}))
+    assert "work pauses at 95%" in wrap_up(c, caps(home), fake({"openai-codex": out5, "claude": w93}))
+    assert not run_allowed(c, caps(home), fake({"openai-codex": out5, "claude": w96}))[0]  # stops at 95%
+    assert claude_code_allowed(caps(home), fake({"claude": w93}))[0] and not claude_code_allowed(True, fake({"claude": w96}))[0]
+    NO_CAPS = True
+    machine_caps({})
+    assert run_allowed(c, True, fake({"openai-codex": out5, "claude": w96}))[0] and not wrap_up(c, True, fake({"openai-codex": out5, "claude": w81}))
     print("quota_lib selftest ok")
 
 

@@ -56,7 +56,7 @@ def alert_line(providers, getu, auto, q):
         return msg + f" {second} is used up too ({q.describe(w1)}); replies come from {nxt} and scheduled work is paused."
     msg += f" Replies now come from {second}: {_left(w1, q)}."
     if auto:
-        msg += f" Auto mode pauses at {q.AUTO_CAP:.0f}% of {second}'s 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit."
+        msg += f" {q.pauser().capitalize()} at {q.AUTO_CAP:.0f}% of {second}'s 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit."
     return msg
 
 
