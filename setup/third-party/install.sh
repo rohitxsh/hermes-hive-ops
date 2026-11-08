@@ -86,6 +86,11 @@ for d in "$HH"/profiles/*; do [ -f "$d/config.yaml" ] || continue
     # playwright-cli defaults to Google Chrome; point it at Hermes's Chromium instead of downloading a browser
     [ -n "$CHROMIUM" ] && ! grep -q '^PLAYWRIGHT_MCP_EXECUTABLE_PATH=' "$d/.env" 2>/dev/null && printf '\nPLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "$CHROMIUM" >> "$d/.env" ;; esac
 done
+echo "== gitleaks 8.30.1 (secret scan before devops pushes; rule 66-secret-scan)"
+T=$(mktemp -d) && GL=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1 \
+  && curl -fsSL -o "$T/g.tgz" "$GL/gitleaks_8.30.1_linux_x64.tar.gz" && curl -fsSL -o "$T/sums" "$GL/gitleaks_8.30.1_checksums.txt" \
+  && (cd "$T" && grep " gitleaks_8.30.1_linux_x64.tar.gz$" sums | sed "s/gitleaks_8.30.1_linux_x64.tar.gz/g.tgz/" | sha256sum -c - >/dev/null) \
+  && tar xzf "$T/g.tgz" -C "$T" gitleaks && install -m 755 "$T/gitleaks" "$HOME/.local/bin/gitleaks" && echo "  ok" || echo "  gitleaks install failed"; rm -rf "$T"
 # The same skills for the coding CLIs: files in ~/.agents/skills (Codex reads it), a symlink in ~/.claude/skills for Claude Code
 mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
 for s in ast-grep playwright-cli agp-9-upgrade differential-review; do
