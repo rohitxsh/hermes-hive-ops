@@ -241,9 +241,68 @@ def leads_with_other_mention(text: str, bot_id: str, bot_role_ids) -> bool:
     return m.group(2) not in set(bot_role_ids) if m.group(1) == "&" else m.group(2) != str(bot_id)
 
 
+# ---- step 2: guests (users in a profile's own allowlist, not admins) only reach that profile's channels ----------------
+_policy_cache = {"mtime": None, "value": (set(), [])}
+
+
+def discord_policy(root: str | None = None):
+    """(admin ids from discord.allow_admin_from, gateway.profile_routes) of the root config; cached by mtime."""
+    p = os.path.join(root or _root(), "config.yaml")
+    try:
+        m = os.path.getmtime(p)
+        if m != _policy_cache["mtime"]:
+            import yaml
+            c = yaml.safe_load(open(p, encoding="utf-8")) or {}
+            admins = {str(x) for x in ((c.get("discord") or {}).get("allow_admin_from") or [])}
+            _policy_cache.update(mtime=m, value=(admins, (c.get("gateway") or {}).get("profile_routes") or []))
+    except Exception:
+        pass
+    return _policy_cache["value"]
+
+
+def route_profile(chat_id: str, thread_id: str, routes) -> str | None:
+    rs = [r for r in routes if r.get("platform", "discord") == "discord" and str(r.get("chat_id")) == str(chat_id)]
+    exact = [r for r in rs if thread_id and str(r.get("thread_id") or "") == str(thread_id)]
+    plain = [r for r in rs if not r.get("thread_id")]
+    return (exact or plain or [{}])[0].get("profile")
+
+
+def profile_users(profile: str, root: str | None = None) -> set:
+    home = root or _root()
+    p = os.path.join(home if profile == "default" else os.path.join(home, "profiles", profile), ".env")
+    try:
+        for line in open(p, encoding="utf-8"):
+            if line.startswith("DISCORD_ALLOWED_USERS="):
+                return {x.strip() for x in line.split("=", 1)[1].strip().strip("'\"").split(",") if x.strip()}
+    except OSError:
+        pass
+    return set()
+
+
+def guest_block(author: str, chat_id: str, thread_id: str, is_dm: bool, admins: set, routes, users_of) -> str | None:
+    """Why a non-admin's message is dropped, or None. Off when no admins are configured."""
+    if not admins or author in admins:
+        return None
+    if is_dm:
+        return "direct messages to this bot are for its admins only"
+    prof = route_profile(chat_id, thread_id, routes)
+    if not prof or author not in users_of(prof):
+        return "this user is a guest of another channel"
+    return None
+
+
 def pre_gateway_dispatch(event=None, **kw):
     msg = getattr(event, "raw_message", None)
     guild = getattr(msg, "guild", None)          # None for DMs, slash-command interactions and other platforms
+    author = getattr(msg, "author", None)
+    if author is not None and not getattr(author, "bot", False) and isinstance(getattr(msg, "content", None), str):
+        ch = getattr(msg, "channel", None)
+        parent = getattr(ch, "parent_id", None)  # set on threads
+        admins, routes = discord_policy()
+        why = guest_block(str(getattr(author, "id", "")), str(parent or getattr(ch, "id", "")),
+                          str(getattr(ch, "id", "")) if parent else "", guild is None, admins, routes, profile_users)
+        if why:
+            return {"action": "skip", "reason": why}
     me = getattr(guild, "me", None)
     if me is None or not isinstance(getattr(msg, "content", None), str):
         return None
@@ -338,6 +397,16 @@ def _selftest():
     assert pre_gateway_dispatch(event=ev("<@111> for the bot")) is None
     assert pre_gateway_dispatch(event=ev("<@222> in a DM", guild=None)) is None
     assert pre_gateway_dispatch(event=N(raw_message=None)) is None and pre_gateway_dispatch() is None
+    routes = [{"platform": "discord", "chat_id": "10", "profile": "trading"},
+              {"platform": "discord", "chat_id": "10", "thread_id": "11", "profile": "research"},
+              {"platform": "discord", "chat_id": "20", "profile": "jobs"}]
+    users = {"trading": {"1", "7"}, "research": {"1", "7"}, "jobs": {"1"}}.get
+    g = lambda a, c, t="", dm=False: guest_block(a, c, t, dm, {"1"}, routes, lambda p: users(p) or set())
+    assert g("1", "20") is None and g("1", "99") is None and g("1", "", dm=True) is None       # the admin: anywhere
+    assert g("7", "10") is None and g("7", "10", "11") is None                                 # guest in their channel
+    assert g("7", "20") and g("7", "99") and g("7", "", dm=True)                               # elsewhere and DMs: no
+    assert guest_block("7", "99", "", True, set(), routes, users) is None                      # no admins set: off
+    assert route_profile("10", "12", routes) == "trading" and route_profile("10", "11", routes) == "research"
     print("selftest ok")
 
 

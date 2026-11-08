@@ -43,18 +43,21 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   link kanban-doctor/kanban-doctor kanban-doctor; link pending-human/pending-human pending-human
   link restart-idle/hermes-restart-idle hermes-restart-idle; link artifacts/publish-artifact publish-artifact
   link issues/issue-digest.py issues; link token-stats/token-stats token-stats; link token-stats/tool-output-stats tool-output-stats
+  link outbox/outbox outbox; link config-track/config-track config-track
   for s in memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py kanban-feed/kanban-feed:kanban-feed.py \
            issues/issue-digest.py:issue-digest.py issues/issue-pending.sh:issue-pending.sh approval-notify/approval-notify.py:approval-notify.py \
            gateway-heal/gateway-heal.py:gateway-heal.py quota/quota-guard.py:quota-guard.py maintenance/hermes-backup.sh:hermes-backup.sh \
-           maintenance/hermes-update-notice.py:hermes-update-notice.py kanban-doctor/kanban-doctor:kanban-doctor.py; do
+           maintenance/hermes-update-notice.py:hermes-update-notice.py kanban-doctor/kanban-doctor:kanban-doctor.py \
+           config-track/config-track:config-track.py; do
     run install -m 755 "$SRC/${s%%:*}" "$HH/scripts/${s##*:}"
   done
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention check\n' "$SRC" > "$HH/scripts/attention-check.sh"
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/attention/attention pr-resume\n' "$SRC" > "$HH/scripts/pr-resume.sh"
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/skill-review/skill-review\n' "$SRC" > "$HH/scripts/skill-review.sh"
   [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/board-sync/board-sync\n' "$SRC" > "$HH/scripts/board-sync.sh"
+  [ "$DRY" = 1 ] || printf '#!/bin/sh\nexec /usr/bin/python3 %s/outbox/outbox notify\n' "$SRC" > "$HH/scripts/outbox-notify.sh"
   run mkdir -p "$HOME/agents/skill-proposals"
-  run chmod 755 "$HH/scripts/attention-check.sh" "$HH/scripts/pr-resume.sh" "$HH/scripts/skill-review.sh" "$HH/scripts/board-sync.sh"
+  run chmod 755 "$HH/scripts/attention-check.sh" "$HH/scripts/pr-resume.sh" "$HH/scripts/skill-review.sh" "$HH/scripts/board-sync.sh" "$HH/scripts/outbox-notify.sh"
   if [ "$DRY" = 0 ]; then  # attention settings: watched domains, and whose "approved" PR comments resume a wait
     mkdir -p "$HOME/agents/attention"
     python3 -c "import json,os,sys

@@ -147,6 +147,28 @@ def fetch(url: str, is_safe: Callable[[str], bool], client=None) -> Optional[dic
             client.close()
 
 
+def firecrawl(url: str, base: str, client=None) -> Optional[dict]:
+    """A page rendered by a self-hosted Firecrawl (JavaScript pages, light bot walls), or None. The URL stays on the LAN."""
+    import httpx
+    own = client is None
+    client = client or httpx.Client(timeout=60)
+    try:
+        r = client.post(base.rstrip("/") + "/v2/scrape",
+                        json={"url": url, "formats": ["markdown"], "onlyMainContent": True, "timeout": 45000})
+        d = (r.json().get("data") or {}) if r.status_code == 200 else {}
+        text = (d.get("markdown") or "").strip()
+        if not text:
+            return None
+        meta = d.get("metadata") or {}
+        return {"url": url, "final_url": meta.get("url") or meta.get("sourceURL") or url,
+                "title": meta.get("title") or "", "content": text}
+    except (httpx.HTTPError, OSError, ValueError, AttributeError):
+        return None
+    finally:
+        if own:
+            client.close()
+
+
 def selftest() -> None:
     page = ("<html><head><title> Test &amp; Page </title><script>var x=1;</script></head><body><nav>Menu</nav>"
             "<main><h1>Hello</h1><p>First   paragraph with <a href='/next'>a link</a>.</p><ul><li>One</li><li>Two</li></ul>"
@@ -178,6 +200,20 @@ def selftest() -> None:
     assert fetch("https://example.com/pdf", safe, client) is None        # binary -> cloud
     assert fetch("https://example.com/blocked", safe, client) is None    # 403 -> cloud
     assert fetch("https://example.com/spa", safe, client) is None        # JS shell -> cloud
+
+    def fc(req):
+        import json as _j
+        u = _j.loads(req.content)["url"]
+        if u.endswith("/empty"):
+            return httpx.Response(200, json={"success": True, "data": {"markdown": ""}})
+        if u.endswith("/down"):
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"success": True, "data": {"markdown": "# Rendered", "metadata": {"title": "T", "url": u + "#x"}}})
+    fcc = httpx.Client(transport=httpx.MockTransport(fc))
+    assert firecrawl("https://example.com/spa", "http://fc:3006/", fcc) == {
+        "url": "https://example.com/spa", "final_url": "https://example.com/spa#x", "title": "T", "content": "# Rendered"}
+    assert firecrawl("https://example.com/empty", "http://fc:3006", fcc) is None
+    assert firecrawl("https://example.com/down", "http://fc:3006", fcc) is None
     print("local-extract selftest ok")
 
 

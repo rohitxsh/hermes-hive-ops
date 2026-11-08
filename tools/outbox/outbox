@@ -1,0 +1,164 @@
+#!/usr/bin/python3
+"""outbox: messages from unattended runs wait as drafts until the owner says send.
+
+In a scheduled run, a Kanban worker or auto mode, an agent that wants to email or message someone outside its team
+saves the exact send command as a draft instead of running it:
+    outbox draft --to "<who>" --summary "<one line: what and why>" -- <command and its arguments>
+The "outbox notify" job (no model, every 5 min, admin channel) posts each new draft once. The owner answers
+"send <id>" or "drop <id>"; the admin assistant then runs `outbox send <id>` / `outbox drop <id>`.
+    outbox list | show <id> | send <id> | drop <id> | notify | --selftest
+Drafts live in ~/agents/outbox/{pending,sent,dropped}/<id>.json. `send` runs the stored command once, in the
+drafting profile's home and working folder, and records its exit code and output."""
+import argparse
+import json
+import os
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = os.environ.get("OUTBOX_DIR") or os.path.expanduser("~/agents/outbox")
+
+
+def _dir(state):
+    d = os.path.join(ROOT, state)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _load(did):
+    for state in ("pending", "sent", "dropped"):
+        p = os.path.join(_dir(state), f"{did}.json")
+        if os.path.exists(p):
+            return state, p, json.load(open(p, encoding="utf-8"))
+    sys.exit(f"no draft {did} (see `outbox list`)")
+
+
+def _write(path, data):
+    tmp = path + ".tmp"
+    json.dump(data, open(tmp, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def draft(to, summary, cmd):
+    if not cmd:
+        sys.exit("give the send command after --")
+    did = secrets.token_hex(3)
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    data = {"id": did, "created": time.strftime("%Y-%m-%d %H:%M"), "to": to, "summary": summary, "cmd": cmd,
+            "cwd": os.getcwd(), "hermes_home": home,
+            "profile": "default" if os.path.basename(home.rstrip("/")) == ".hermes" else os.path.basename(home.rstrip("/"))}
+    _write(os.path.join(_dir("pending"), f"{did}.json"), data)
+    print(f"Saved as draft {did}; the owner will be asked to send it. Don't send it another way.")
+    return did
+
+
+def send(did):
+    state, path, d = _load(did)
+    if state != "pending":
+        sys.exit(f"draft {did} is already {state}")
+    env = dict(os.environ, HERMES_HOME=d["hermes_home"])
+    r = subprocess.run(d["cmd"], cwd=d["cwd"] if os.path.isdir(d["cwd"]) else None, env=env,
+                       capture_output=True, text=True, timeout=300)
+    d.update(sent=time.strftime("%Y-%m-%d %H:%M"), exit=r.returncode, output=(r.stdout + r.stderr)[-2000:])
+    _write(os.path.join(_dir("sent" if r.returncode == 0 else "pending"), f"{did}.json"), d)
+    if r.returncode == 0:
+        os.remove(path)
+    print(f"draft {did}: {'sent' if r.returncode == 0 else f'FAILED (exit {r.returncode}), still pending'}\n{d['output'][-600:]}")
+    return r.returncode
+
+
+def drop(did):
+    state, path, d = _load(did)
+    if state != "pending":
+        sys.exit(f"draft {did} is already {state}")
+    d["dropped"] = time.strftime("%Y-%m-%d %H:%M")
+    _write(os.path.join(_dir("dropped"), f"{did}.json"), d)
+    os.remove(path)
+    print(f"draft {did} dropped")
+
+
+def notify():
+    """Each new pending draft once (for the no-agent job; prints nothing when there is nothing new)."""
+    lines = []
+    for f in sorted(os.listdir(_dir("pending"))):
+        p = os.path.join(_dir("pending"), f)
+        d = json.load(open(p, encoding="utf-8"))
+        if d.get("announced"):
+            continue
+        lines.append(f"- `{d['id']}` from **{d['profile']}** to {d['to']}: {d['summary']}")
+        d["announced"] = time.strftime("%Y-%m-%d %H:%M")
+        _write(p, d)
+    if lines:
+        print("**Drafts waiting for your OK** (reply `send <id>` or `drop <id>`; `show <id>` for the full command):\n"
+              + "\n".join(lines))
+
+
+def show(did):
+    state, _, d = _load(did)
+    print(json.dumps(dict(d, state=state), indent=1, ensure_ascii=False))
+
+
+def listing():
+    for state in ("pending", "sent", "dropped"):
+        for f in sorted(os.listdir(_dir(state)))[-20:]:
+            d = json.load(open(os.path.join(_dir(state), f), encoding="utf-8"))
+            print(f"{d['id']}  {state:8} {d['created']}  {d['profile']} -> {d['to']}: {d['summary'][:80]}")
+
+
+def selftest():
+    global ROOT
+    with tempfile.TemporaryDirectory() as d:
+        ROOT = d
+        out = os.path.join(d, "sent.txt")
+        a = draft("bob@example.com", "follow-up", [sys.executable, "-c", f"open({out!r},'w').write('hi')"])
+        b = draft("team", "bad", [sys.executable, "-c", "import sys; sys.exit(3)"])
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            notify()
+        assert a in buf.getvalue() and b in buf.getvalue()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            notify()
+        assert buf.getvalue() == ""                                  # announced once
+        assert send(a) == 0 and open(out).read() == "hi" and os.path.exists(os.path.join(d, "sent", f"{a}.json"))
+        assert send(b) == 3 and os.path.exists(os.path.join(d, "pending", f"{b}.json"))   # failure stays pending
+        drop(b)
+        assert os.path.exists(os.path.join(d, "dropped", f"{b}.json"))
+        try:
+            send(a)
+            raise AssertionError("sent twice")
+        except SystemExit:
+            pass
+    print("outbox selftest ok")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd")
+    dp = sub.add_parser("draft"); dp.add_argument("--to", required=True); dp.add_argument("--summary", required=True)
+    dp.add_argument("command", nargs=argparse.REMAINDER)
+    for c in ("show", "send", "drop"):
+        sub.add_parser(c).add_argument("id")
+    sub.add_parser("list"); sub.add_parser("notify")
+    if sys.argv[1:] == ["--selftest"]:
+        return selftest()
+    a = ap.parse_args()
+    if a.cmd == "draft":
+        draft(a.to, a.summary, a.command[1:] if a.command[:1] == ["--"] else a.command)
+    elif a.cmd == "send":
+        sys.exit(send(a.id))
+    elif a.cmd == "drop":
+        drop(a.id)
+    elif a.cmd == "show":
+        show(a.id)
+    elif a.cmd == "notify":
+        notify()
+    else:
+        listing()
+
+
+if __name__ == "__main__":
+    main()

@@ -42,7 +42,15 @@ class LocalExtractProvider(BaseWebSearchProvider):
                 if r:
                     results[u] = document(u, r["title"], r["content"], source_url=r["final_url"])
             rest = [u for u in urls if u not in results]
-            logger.info("local-extract: %d local, %d to cloud fallback", len(results), len(rest))
+            from hermes_cli.config import get_env_value
+            fc_base = (get_env_value("LOCAL_EXTRACT_FIRECRAWL_URL") or "").strip()
+            if fc_base and rest:   # a self-hosted Firecrawl on the LAN renders JS pages before anything goes to the cloud
+                ok = [u for u in rest if is_safe_url(u)]
+                for u, r in zip(ok, await asyncio.gather(*(asyncio.to_thread(extractor.firecrawl, u, fc_base) for u in ok))):
+                    if r:
+                        results[u] = document(u, r["title"], r["content"], source_url=r["final_url"])
+                rest = [u for u in urls if u not in results]
+            logger.info("local-extract: %d local or Firecrawl, %d to cloud fallback", len(results), len(rest))
             if rest:
                 for r in await asyncio.to_thread(keyless_extract, "Parallel", "parallel", rest, logger):
                     results.setdefault(r.get("url", ""), r)

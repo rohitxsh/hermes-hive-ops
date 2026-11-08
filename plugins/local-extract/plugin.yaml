@@ -1,6 +1,6 @@
 name: local-extract
-version: 1.0.0
-description: "web_extract from this VM (URLs stay private), with the keyless cloud ring (Parallel, Keenable, Tavily, Firecrawl) only for pages it can't handle: blocked requests, PDFs, JavaScript-only pages."
+version: 1.1.0
+description: "web_extract from this VM (URLs stay private), with the keyless cloud ring (Parallel, Keenable, Tavily, Firecrawl) only for pages it can't handle: blocked requests, PDFs, JavaScript-only pages. Optional: LOCAL_EXTRACT_FIRECRAWL_URL points at a self-hosted Firecrawl that renders those pages first, on your LAN."
 author: hermes-hive-ops
 kind: backend
 provides_web_providers:

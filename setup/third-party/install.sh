@@ -71,6 +71,22 @@ grep -q AGENT_REACH_LANG "$HOME/.profile" 2>/dev/null || echo 'export AGENT_REAC
 echo "== markitdown 0.1.9 (document to Markdown, for the markitdown skill)"
 [ -n "$UV" ] && "$UV" tool install -q "markitdown[all]==0.1.9" && echo "  ok"
 
+echo "== Role skills from the hub: ast-grep + Android agp-9-upgrade (*-dev), playwright-cli (*-qa, *-design), Trail of Bits differential-review (*-architect, *-qa)"
+# Hub installs follow upstream; tested at microsoft/playwright-cli 4bc00fb, android/skills bf68e2d, trailofbits/skills e4dd0bb.
+# Binaries go to user prefixes (no sudo). ast-grep gets its own prefix so only `ast-grep` reaches PATH: `sg` is util-linux's setgroups.
+PATH="$NODE:$PATH" npm i -g --prefix "$HOME/.local/share/ast-grep" @ast-grep/cli@0.51.1 --no-audit --no-fund >/dev/null 2>&1 \
+  && ln -sf "$HOME/.local/share/ast-grep/bin/ast-grep" "$HOME/.local/bin/ast-grep" && echo "  ast-grep ok" || echo "  npm install @ast-grep/cli failed"
+PATH="$NODE:$PATH" npm i -g --prefix "$HOME/.local" @playwright/cli@0.1.23 --no-audit --no-fund >/dev/null 2>&1 && echo "  playwright-cli ok" || echo "  npm install @playwright/cli failed"
+CHROMIUM=$(ls -d "$HH"/tools/chromium-*/chrome-linux64/chrome 2>/dev/null | tail -1)
+hub() { [ -n "$(find "$2/skills" -maxdepth 2 -type d -name "${1##*/}" 2>/dev/null)" ] || "$HERMES" -p "$(basename "$2")" skills install "$1" --yes </dev/null >/dev/null 2>&1 || echo "  $1 into $(basename "$2") failed"; }
+for d in "$HH"/profiles/*; do [ -f "$d/config.yaml" ] || continue
+  case "$d" in *-dev) hub official/software-development/ast-grep "$d"; hub skills-sh/android/skills/build-system/agp/agp-9-upgrade "$d" ;; esac
+  case "$d" in *-architect|*-qa) hub skills-sh/trailofbits/skills/plugins/differential-review/skills/differential-review "$d" ;; esac
+  case "$d" in *-qa|*-design) hub skills-sh/microsoft/playwright-cli/skills/playwright-cli "$d"
+    # playwright-cli defaults to Google Chrome; point it at Hermes's Chromium instead of downloading a browser
+    [ -n "$CHROMIUM" ] && ! grep -q '^PLAYWRIGHT_MCP_EXECUTABLE_PATH=' "$d/.env" 2>/dev/null && printf '\nPLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "$CHROMIUM" >> "$d/.env" ;; esac
+done
+
 echo "== Web UIs: Hermes's own Webapp (9120) and dashboard (9119); set their sign-ins with tools/ui-password/ui-password"
 echo "== Optional hub skills (per profile): hermes -p <profile> skills install skills-sh/supabase/agent-skills/skills/supabase"
 echo "   and the Flutter/Dart set: skills-sh/flutter/agent-plugins/skills/<skill>"
