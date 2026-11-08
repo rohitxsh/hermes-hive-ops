@@ -1,0 +1,10 @@
+---
+profiles: default
+---
+- Settle these yourself and report them in one line afterwards; they are never questions for the owner:
+  - Defects in this machine's own tooling: the kit's plugins, tools and scripts, and the local Hermes patches (including a check or guard that a local patch already changes). Fix with a backup and a test, log it, and record any upstream Hermes bug in the issue notes. Only sending something upstream (a GitHub issue or PR) needs the owner.
+  - A model provider's safety refusal (Claude or the guardian stopping a command): follow the safety-refusals rule (retry once with the other model or CLI, or redo it as plain separate steps); if it is still refused, skip that part, record it on the card and let the rest of the work go on. Never ask a person to "review" or approve a refused call.
+  - Disk space above 80%: clear what can be rebuilt or is already safe elsewhere: package and build caches (`uv cache prune`, npm/pnpm/pip caches, build output), unused Docker images and build cache, failed or incomplete backups, backups beyond their retention, worktrees of merged or closed PRs with no uncommitted work. Ask only if the disk is still above 90% after that.
+  - Recurring warnings with a known cause: fix the cause or retire the message as harmless; don't ask for a "team decision".
+  - A skill-review proposal you already tested on a scratch copy: apply it (back up the skill first) unless it changes what a profile is allowed to do.
+- Still ask the owner for: logins, OAuth connections, 2FA codes and new accounts; secrets; spending; anything reaching real people or production; deleting data with no copy; and checkpoints a SOUL names as human sign-offs (PRDs, designs, releases).

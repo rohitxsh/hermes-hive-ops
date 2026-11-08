@@ -252,7 +252,31 @@ def pre_gateway_dispatch(event=None, **kw):
     return None
 
 
+# ---- step 2: each new session's prompt says whether auto mode is on (the auto-mode rule acts on it) --------------------
+def auto_mode_line(profile: str, root: str | None = None) -> str:
+    if profile in ("", "random"):
+        return ""
+    home = root or _root()
+    d = home if profile == "default" else os.path.join(home, "profiles", profile)
+    try:
+        st = json.load(open(os.path.join(d, "auto-mode.json"), encoding="utf-8"))
+    except (OSError, ValueError):
+        st = {}
+    if isinstance(st, dict) and st.get("enabled"):
+        return f"Auto mode: ON for this profile (since {str(st.get('since', '?'))[:16]})."
+    return "Auto mode: OFF for this profile."
+
+
+def _auto_mode_section(info) -> str:
+    try:
+        return auto_mode_line(str(info.get("profile_name") or "default"))
+    except Exception:  # a prompt section must never break a session
+        return ""
+
+
 def register(ctx) -> None:
+    if hasattr(ctx, "register_system_prompt_section"):   # Hermes >= 0.23.0
+        ctx.register_system_prompt_section("ops-core.auto-mode", _auto_mode_section, max_chars=200)
     ctx.register_cli_command("ops-rules", "Shared SOUL rules: apply, check or show", _cli_setup, _cli)
     ctx.register_cli_command("ops", "Run an ops kit tool: " + ", ".join(sorted(TOOLS)), _ops_setup, _ops)
     ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
@@ -293,6 +317,10 @@ def _selftest():
         assert open(f"{root}/profiles/team-qa/SOUL.md", encoding="utf-8").read() == "You are QA.\n\n## Tail\n- keep\n"
         w(f"{d}/jobs.json", json.dumps({"jobs": [{"id": "a1", "name": "issue handler"}, {"id": "b2", "name": "kanban doctor"}]}))
         assert doctor_job_id(f"{d}/jobs.json") == "b2" and doctor_job_id(f"{d}/missing.json") is None
+        w(f"{root}/profiles/team-qa/auto-mode.json", json.dumps({"enabled": True, "since": "2026-11-03T22:28:12+05:30"}))
+        assert auto_mode_line("team-qa", root) == "Auto mode: ON for this profile (since 2026-11-03T22:28)."
+        assert auto_mode_line("default", root) == "Auto mode: OFF for this profile."     # no file = off
+        assert auto_mode_line("random", root) == "" and _auto_mode_section({}) is not None
     out = "t_1 blocked kind=- @dev [blocked] x | y\nt_2 ready kind=- @qa [not-picked-up] z | \n"
     assert new_stuck(out, None) == (["t_1", "t_2"], False)          # first scan only learns the set
     assert new_stuck(out, ["t_1", "t_2"]) == (["t_1", "t_2"], False)
