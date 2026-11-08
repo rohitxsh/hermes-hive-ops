@@ -86,6 +86,13 @@ for d in "$HH"/profiles/*; do [ -f "$d/config.yaml" ] || continue
     # playwright-cli defaults to Google Chrome; point it at Hermes's Chromium instead of downloading a browser
     [ -n "$CHROMIUM" ] && ! grep -q '^PLAYWRIGHT_MCP_EXECUTABLE_PATH=' "$d/.env" 2>/dev/null && printf '\nPLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "$CHROMIUM" >> "$d/.env" ;; esac
 done
+# The same skills for the coding CLIs: files in ~/.agents/skills (Codex reads it), a symlink in ~/.claude/skills for Claude Code
+mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
+for s in ast-grep playwright-cli agp-9-upgrade differential-review; do
+  src=$(find "$HH"/profiles/*/skills -maxdepth 3 -type d -name "$s" 2>/dev/null | head -1)
+  [ -n "$src" ] && [ ! -e "$HOME/.agents/skills/$s" ] && cp -r "$src" "$HOME/.agents/skills/$s"
+  [ -e "$HOME/.agents/skills/$s" ] && [ ! -e "$HOME/.claude/skills/$s" ] && ln -s "$HOME/.agents/skills/$s" "$HOME/.claude/skills/$s"
+done
 
 echo "== Web UIs: Hermes's own Webapp (9120) and dashboard (9119); set their sign-ins with tools/ui-password/ui-password"
 echo "== Optional hub skills (per profile): hermes -p <profile> skills install skills-sh/supabase/agent-skills/skills/supabase"
