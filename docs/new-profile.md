@@ -55,6 +55,41 @@ bash ~/.hermes/scripts/agent-health.sh                                       # m
 - The issue digest, quota governor, approval pings and token report pick the profile up on their own.
 - Then ask the owner to send a test message in the channel. Check the gateway log shows it routed to the new profile.
 
+## Team profiles: helper routing and coding-run sizing
+- Role names matter: `*-dev`, `*-qa`, `*-devops`, `*-architect` pick up the shared rules for review rounds, code health,
+  secret scans and coding-run sizing (rule 53: model + thinking level per task size, current lineup only) automatically.
+- Give every team profile (lead included) helper routing: `hermes -p <name> plugins install advanced-delegation --yes`,
+  `plugins enable advanced-delegation`, then the two keys from `setup/examples/delegation-routes.yaml`
+  (`config set delegation.backends.model_map '<JSON>'`, `config set delegation.backend model_map`). Check with
+  `hermes -p <name> delegation config --show`.
+
+## Guests and sensitive profiles on a shared machine
+- **A guest for one channel:** their ID in that profile's `.env` `DISCORD_ALLOWED_USERS` and in the default `.env` (the
+  bot-owning profile authorizes first). With `discord.allow_admin_from` set in the default config, ops-core's guest guard
+  keeps non-admins to channels routed to a profile that lists them and ignores their DMs; `require_admin_for_exec_approval`
+  and the `*_allowed_commands` lists keep approval buttons and admin slash commands owner-only. On Discord, give the guest
+  the channel only, never its category, and turn off Create Invite / Mention @everyone for @everyone.
+- **A profile holding sensitive credentials** (a broker, payments): all profiles share one OS user, so isolation is a guard
+  on the agents' commands, not an OS boundary. Add its tool names and credential names to `approvals.deny` in every
+  other profile, give it its own Kanban board (`HERMES_KANBAN_BOARD` in its `.env`), keep the browser off, and put a
+  `.claude/settings.json` in its work folder that denies `sudo`, `systemd-creds` and reads of the credential store.
+
+## Moving profiles from another machine
+1. Stop the old gateway (and any long-running loops the profiles started) so nothing writes during the copy.
+2. Copy each profile home whole. A source machine's default profile becomes a named profile: copy `~/.hermes` without
+   `hermes-agent installs tools profiles kanban* sandboxes runtime shared* telemetry webapp *.lock gateway.* processes.json*`
+   and the old admin's job state files; drop its `webapp:`/`dashboard:` sections (machine-level). Copy data folders
+   separately (`tar | tar` through a host that can reach both if the VMs are isolated from each other).
+3. Kanban: `hermes kanban boards export <slug>` on the old machine, `hermes kanban boards import <archive> --as <slug>` here
+   (card ids are kept); point scripts and SOULs at `--board <slug>`.
+4. Keep only the profiles' own cron jobs (the machine's admin jobs already cover them); move a copied
+   `plugins/hermes-talk/pyproject.toml` aside (only the default profile keeps it); sync ops-core into the copied plugins.
+5. Credentials: the owner re-seals them on the new machine (`systemd-creds decrypt` there piped into `systemd-creds encrypt`
+   here, never printed), then enables any timers that use them.
+6. Routes, free-response channels and `kanban.dispatch_profiles` in the main config; a short "where you run now" section at
+   the top of each moved SOUL; then restart when idle and run the self-check. A `hermes config set` on the default profile
+   can re-sync Hermes's venv: check the document and chart libraries afterwards.
+
 ## Renaming a profile
 - **Rename it:** `hermes profile rename <old> <new>` moves the folder and migrates sessions and routing identity. It does **not** touch:
   - `gateway.profile_routes` (profile and route names) and `kanban.dispatch_profiles` in the main config;
