@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ping the owner in #assistant about agents waiting for them (Hermes cron "approval notify", every minute,
+"""Ping the owner (or @here, see heading()) in #assistant about agents waiting for them (Hermes cron "approval notify", every minute,
 no LLM). Reads ~/.hermes/approval-queue.jsonl, written by the approval-notify plugin in every profile.
 A request is announced once, only if it is still unanswered GRACE seconds after it started. Its Discord buttons
 last as long as the request (approvals.discord_prompt_timeout >= approvals.timeout: 3 h, 6 h in auto mode; since
@@ -20,12 +20,13 @@ KEEP = 86400        # queue lines kept this long
 KIND = {"approval": "approve a command", "clarify": "answer a question"}
 
 
-def owner_id():
-    try:
-        m = re.search(r"^DISCORD_ALLOWED_USERS=(\d+)", open(os.path.expanduser("~/.hermes/.env")).read(), re.M)
-        return m.group(1) if m else None
-    except OSError:
-        return None
+def heading(env):
+    """First line of a ping. APPROVAL_PING=here in ~/.hermes/.env pings @here (a team where anyone may approve);
+    otherwise the owner, the first ID in DISCORD_ALLOWED_USERS."""
+    if re.search(r"^APPROVAL_PING=['\"]?here\b", env, re.M):
+        return "@here waiting for team/human input:"
+    m = re.search(r"^DISCORD_ALLOWED_USERS=['\"]?(\d+)", env, re.M)
+    return (f"<@{m.group(1)}> " if m else "") + "waiting for you:"
 
 
 def where(session_key, profile):
@@ -88,8 +89,11 @@ def main():
             fh.writelines(json.dumps(r) + "\n" for r in keep)
         os.replace(QUEUE + ".tmp", QUEUE)
     if lines:
-        uid = owner_id()
-        print((f"<@{uid}> " if uid else "") + "waiting for you:\n" + "\n".join(lines))
+        try:
+            env = open(os.path.expanduser("~/.hermes/.env")).read()
+        except OSError:
+            env = ""
+        print(heading(env) + "\n" + "\n".join(lines))
 
 
 def selftest():
@@ -109,6 +113,8 @@ def selftest():
     assert where("agent:main:discord:thread:9:9", "default")[0] == "assistant"
     assert pending(recs, {"a", "kanban:t1:1"}, now + 3600)[1] == ["b"]                          # no second ping for a
     assert pending(recs, set(), now + MAX_AGE + 100)[1] == ["kanban:t1:1"]                      # past the wait: no ping
+    assert heading("DISCORD_ALLOWED_USERS=42,7\n") == "<@42> waiting for you:"
+    assert heading("x=1\nAPPROVAL_PING=here\nDISCORD_ALLOWED_USERS=1\n").startswith("@here ") and heading("") == "waiting for you:"
     print("approval-notify selftest ok")
 
 

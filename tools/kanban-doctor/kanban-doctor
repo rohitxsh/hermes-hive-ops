@@ -13,7 +13,8 @@
 A card is listed when it is: blocked for >30 min on anything but another card (needs_input blocks are left out: those
 wait on a person); held in triage after a block loop (kind other than needs_input); ready or in review but not picked up for >45 min;
 running with no heartbeat for >30 min; scheduled for >24 h; todo for >12 h although every parent is done; or flagged by
-`hermes kanban diagnostics` at error level; and, once a day, cards that have waited on a person (needs_input) for over
+`hermes kanban diagnostics` at error level (a repeated_crashes flag is dropped once the card's newest run parked it
+cleanly); and, once a day, cards that have waited on a person (needs_input) for over
 a day, so the agent re-checks whether the question was answered or became unnecessary. An unassigned card shows who
 created it. Whether a listed card really waits on a person is the agent's call.
 """
@@ -78,11 +79,44 @@ def candidates(db, now, diags=()):
     return sorted(out)
 
 
+def clean_park(db, tid):
+    """True when the card's newest run parked it cleanly (scheduled, no error, its worker exited 0 after the park).
+    Hermes's repeated_crashes counts older crashes even after such a run, so that diagnostic is stale then.
+    Missing or ambiguous proof keeps the diagnostic."""
+    try:
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+        try:
+            row = c.execute("""select r.id, r.ended_at from task_runs r join tasks t on t.id = r.task_id
+                where t.id = ? and t.status = 'scheduled' and r.status = 'scheduled' and r.outcome = 'scheduled'
+                  and r.ended_at is not null and r.error is null and r.id = (select r2.id from task_runs r2
+                  where r2.task_id = t.id order by r2.started_at desc, r2.id desc limit 1)""", (tid,)).fetchone()
+            if not row:
+                return False
+            ev = lambda kind: c.execute("""select created_at, payload from task_events where task_id = ? and run_id = ?
+                and kind = ? order by created_at desc, id desc limit 1""", (tid, row[0], kind)).fetchone()
+            parked, result = ev("scheduled"), ev("worker_result")
+            if not parked or not result or not parked[0] <= row[1] <= result[0]:
+                return False
+            code = json.loads(result[1]).get("exit_code")
+            return type(code) is int and code == 0
+        finally:
+            c.close()
+    except (sqlite3.Error, OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def diagnostics():
     try:
         r = subprocess.run([f"{H}/.local/bin/hermes", "kanban", "diagnostics", "--json", "--severity", "error"],
                            capture_output=True, text=True, timeout=120)
-        return {d["task_id"]: ",".join(sorted({x["kind"] for x in d.get("diagnostics", [])})) for d in json.loads(r.stdout or "[]")}
+        out = {}
+        for d in json.loads(r.stdout or "[]"):
+            kinds = {x["kind"] for x in d.get("diagnostics", [])}
+            if "repeated_crashes" in kinds and clean_park(DB, d["task_id"]):
+                kinds.discard("repeated_crashes")
+            if kinds:
+                out[d["task_id"]] = ",".join(sorted(kinds))
+        return out
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         return {}
 
@@ -150,6 +184,17 @@ def selftest():
         assert ids == ["a", "b", "c", "d", "e", "f", "r", "u"], got
         assert "[waiting-on-person 1d]" in got[1] and "@unassigned(created by research) [not-picked-up]" in got[7], got
         assert "[blocked]" in got[0] and "no unlink tool" in got[0] and "[diagnostic:repeated_crashes]" in got[4]
+        c = sqlite3.connect(db)
+        c.executescript("""alter table task_events add column run_id;
+            create table task_runs (id, task_id, status, outcome, started_at, ended_at, error);
+            insert into tasks (id, status, assignee, title, block_kind) values ('s', 'scheduled', 'dev', 'parked', null),
+              ('t', 'scheduled', 'dev', 'parked, worker failed', null);
+            insert into task_runs values (1, 's', 'crashed', 'crashed', 10, 20, 'boom'), (2, 's', 'scheduled', 'scheduled', 30, 40, null),
+              (3, 't', 'scheduled', 'scheduled', 30, 40, null);
+            insert into task_events (task_id, kind, created_at, payload, run_id) values ('s', 'scheduled', 39, '{}', 2),
+              ('s', 'worker_result', 41, '{"exit_code": 0}', 2), ('t', 'scheduled', 39, '{}', 3), ('t', 'worker_result', 41, '{"exit_code": 1}', 3);""")
+        c.commit(); c.close()
+        assert clean_park(db, "s") and not clean_park(db, "t") and not clean_park(db, "a") and not clean_park(f"{d}/none.db", "s")
     assert after_release("review", "qa", "dev") == [["reopen-review"], ["assign", "dev"]]
     assert after_release("ready", "qa", "dev") == [["assign", "dev"]]
     assert after_release("ready", "dev", "dev") == [] and after_release("review", "qa", None) == []

@@ -15,12 +15,14 @@ import argparse
 import datetime
 import glob
 import os
+import pwd
 import sqlite3
 import subprocess
 import sys
 import time
 
-HERMES_DIR = os.path.join(os.path.expanduser("~"), ".hermes")
+# it runs as root (systemd-run), so "~" would be /root: use the home of whoever owns this script
+HERMES_DIR = os.path.join(pwd.getpwuid(os.stat(os.path.realpath(__file__)).st_uid).pw_dir, ".hermes")
 GATEWAY_LOG = os.path.join(HERMES_DIR, "logs", "gateway.log")
 LOG = os.path.join(HERMES_DIR, "logs", "restart-idle.log")
 UNIT = "agent-worker@hermes"
