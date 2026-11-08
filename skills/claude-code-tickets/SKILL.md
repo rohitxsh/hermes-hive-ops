@@ -42,8 +42,9 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
    - "Commit with clear messages and push the branch. Its draft pull request already exists: don't open another one and don't mark it ready. Keep its description current with `gh pr edit --body-file`: two or three plain sentences first (what this changes for the people using the product, and anything someone needs to do), then the full technical description (what changed and why, how it was tested, risks and open points), ending with `Closes #N`."
    - "Finish with a short summary: what changed, which checks ran and their results, anything left undone."
 4. Start Claude Code **in the background**. A coding run outlasts the foreground tool time limit:
-   `terminal(command="cd <worktree> && claude -p \"$(cat ~/.local/state/claude-runs/<repo>-issue-N.prompt)\" --dangerously-skip-permissions --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1", background=true, notify_on_complete=true)`
-   Codex CLI (fallback): `terminal(command="cd <worktree> && codex exec --dangerously-bypass-approvals-and-sandbox --json -o ~/.local/state/claude-runs/<repo>-issue-N.summary.txt - < ~/.local/state/claude-runs/<repo>-issue-N.prompt > ~/.local/state/claude-runs/<repo>-issue-N.jsonl 2>&1", background=true, notify_on_complete=true)` (full access, like Claude Code's skip-permissions)
+   `terminal(command="cd <worktree> && claude -p \"$(cat ~/.local/state/claude-runs/<repo>-issue-N.prompt)\" --dangerously-skip-permissions --model <model> --effort <level> --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1", background=true, notify_on_complete=true)`
+   Codex CLI (fallback): `terminal(command="cd <worktree> && codex exec -m <model> -c model_reasoning_effort=<level> --dangerously-bypass-approvals-and-sandbox --json -o ~/.local/state/claude-runs/<repo>-issue-N.summary.txt - < ~/.local/state/claude-runs/<repo>-issue-N.prompt > ~/.local/state/claude-runs/<repo>-issue-N.jsonl 2>&1", background=true, notify_on_complete=true)` (full access, like Claude Code's skip-permissions)
+   Pick `<model>` and `<level>` from the coding-run table in your Shared rules (small / standard / complex / review) and name the size in the prompt file's first line.
 5. Tell the user in one line: "Handed #N to <Claude Code|Codex>: <title>."
 6. Wait for the completion notice. Don't poll in a loop, and don't start anything else in the repo meanwhile.
 
@@ -79,7 +80,7 @@ Continue with the next `ready` ticket until none is left, then post a short summ
 
 A scheduled run ends after its turn, and its background processes end with it, so no completion notice would ever come. In a scheduled run:
 
-- Start Claude Code **detached** so it outlives the run: `setsid -f bash -c 'cd <worktree> && claude -p "$(cat <prompt-file>)" --dangerously-skip-permissions --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1'`. Codex runs the same way with its step-4 command. Don't wait for it.
+- Start Claude Code **detached** so it outlives the run: `setsid -f bash -c 'cd <worktree> && claude -p "$(cat <prompt-file>)" --dangerously-skip-permissions --model <model> --effort <level> --max-turns 200 --output-format json > ~/.local/state/claude-runs/<repo>-issue-N.json 2>&1'`. Codex runs the same way with its step-4 command. Don't wait for it.
 - At the start of each scheduled run, review what earlier runs started. A non-empty result JSON (or Codex's summary file) plus a PR means it's ready for step 3. An empty JSON with `pgrep -f "claude -p|codex exec"` still showing it means it's still working: leave it and don't start another.
 
 ## When things go wrong
