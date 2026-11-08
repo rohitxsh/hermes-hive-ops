@@ -12,6 +12,9 @@ zip="$dir/hermes-backup-$(date +%F).zip"
 if ! out=$(hermes backup -o "$zip" -k 7 2>&1); then
   echo "Hermes backup failed: $(printf '%s' "$out" | grep -v 'Command helper' | tail -3)"; exit 1
 fi
+# Kanban scratch workspaces (test builds, per-round evidence copies) can reach tens of GB; the nightly VM image keeps
+# them, so the zip leaves them out. zip exits 12 when nothing matched.
+zip -q -d "$zip" 'kanban/workspaces/*' >/dev/null 2>&1 || true
 chmod 600 "$dir"/hermes-backup-*.zip  # the zip holds .env files and logins
 [ -s "$zip" ] || { echo "Hermes backup produced no file at $zip"; exit 1; }
 # Second copy on the backup drive (a separate disk, e.g. the host's USB HDD) when one is mounted, so a restore
