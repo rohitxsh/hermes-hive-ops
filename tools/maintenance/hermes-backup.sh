@@ -10,7 +10,12 @@ export PATH="$HOME/.local/bin:$PATH"
 dir="$HOME/hermes-backups"; mkdir -p "$dir"; chmod 700 "$dir"
 zip="$dir/hermes-backup-$(date +%F).zip"
 if ! out=$(hermes backup -o "$zip" -k 7 2>&1); then
-  echo "Hermes backup failed: $(printf '%s' "$out" | grep -v 'Command helper' | tail -3)"; exit 1
+  # A file a running agent deleted mid-backup (temp process output) leaves a good archive: Hermes says "Archive kept"
+  # and every skipped file is Errno 2. Anything else is a real failure.
+  if ! { [ -s "$zip" ] && printf '%s' "$out" | grep -q 'Archive kept' \
+         && ! printf '%s' "$out" | grep '\[Errno' | grep -qv 'Errno 2\]'; }; then
+    echo "Hermes backup failed: $(printf '%s' "$out" | grep -v 'Command helper' | tail -3)"; exit 1
+  fi
 fi
 # Kanban scratch workspaces (test builds, per-round evidence copies) can reach tens of GB; the nightly VM image keeps
 # them, so the zip leaves them out. zip exits 12 when nothing matched.
