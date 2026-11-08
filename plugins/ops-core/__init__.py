@@ -4,7 +4,8 @@ Rule files (*.md) come from this plugin's rules/ folder (generic) and ~/agents/r
 with the same name replaces the plugin's). Each starts with front matter naming the profiles it applies to:
 
     ---
-    profiles: *            (fnmatch patterns on profile names, space-separated; "default" is ~/.hermes itself)
+    profiles: *            (fnmatch patterns on profile names, space-separated; "default" is ~/.hermes itself;
+                            @pm = a team lead, i.e. a profile X with an X-dev sibling; @team = a lead and its X-* profiles)
     exclude: random        (optional)
     ---
     - the rule text, as SOUL bullets
@@ -71,10 +72,25 @@ def load_rules(dirs=None) -> list[tuple[str, dict, str]]:
     return out
 
 
-def applies(meta: dict, profile: str) -> bool:
+def leads(root: str | None = None) -> set[str]:
+    """Team leads (PMs): profiles X that have an X-dev sibling."""
+    d = os.path.join(root or _root(), "profiles")
+    names = set(os.listdir(d)) if os.path.isdir(d) else set()
+    return {n for n in names if f"{n}-dev" in names}
+
+
+def _match(profile: str, pat: str, pms: set[str]) -> bool:
+    if pat == "@pm":
+        return profile in pms
+    if pat == "@team":
+        return profile in pms or any(profile.startswith(l + "-") for l in pms)
+    return fnmatch.fnmatch(profile, pat)
+
+
+def applies(meta: dict, profile: str, pms: set[str] = frozenset()) -> bool:
     inc = (meta.get("profiles") or "*").split()
     exc = (meta.get("exclude") or "").split()
-    return any(fnmatch.fnmatch(profile, p) for p in inc) and not any(fnmatch.fnmatch(profile, p) for p in exc)
+    return any(_match(profile, p, pms) for p in inc) and not any(_match(profile, p, pms) for p in exc)
 
 
 def souls(root: str) -> list[tuple[str, str]]:
@@ -83,8 +99,8 @@ def souls(root: str) -> list[tuple[str, str]]:
     return [(n, p) for n, p in found if os.path.exists(p)]
 
 
-def block_for(profile: str, rules) -> str:
-    bodies = [body for _, meta, body in rules if applies(meta, profile)]
+def block_for(profile: str, rules, pms: set[str] = frozenset()) -> str:
+    bodies = [body for _, meta, body in rules if applies(meta, profile, pms)]
     return "\n".join([BEGIN, HEADING, ""] + bodies + [END]) if bodies else ""
 
 
@@ -102,10 +118,10 @@ def render(soul: str, block: str) -> str:
 
 def run(action: str, dry: bool = False, root: str | None = None, dirs=None) -> list[str]:
     """apply / check: the SOULs that were (or would be) changed."""
-    rules, changed = load_rules(dirs), []
+    rules, changed, pms = load_rules(dirs), [], leads(root)
     for profile, path in souls(root or _root()):
         soul = open(path, encoding="utf-8").read()
-        new = render(soul, block_for(profile, rules))
+        new = render(soul, block_for(profile, rules, pms))
         if new == soul:
             continue
         changed.append(profile)
@@ -123,7 +139,7 @@ def _cli_setup(p):
 
 def _cli(args) -> int:
     if args.action == "show":
-        print(block_for(args.profile or "default", load_rules()) or "(no rules apply)")
+        print(block_for(args.profile or "default", load_rules(), leads()) or "(no rules apply)")
         return 0
     changed = run(args.action, args.dry_run)
     verb = "would update" if args.action == "check" or args.dry_run else "updated"
@@ -374,6 +390,13 @@ def _selftest():
         assert run("apply", root=root, dirs=dirs) == ["default", "team-qa"]   # no rules left: block removed
         assert open(f"{root}/SOUL.md", encoding="utf-8").read() == "You are the admin.\n"
         assert open(f"{root}/profiles/team-qa/SOUL.md", encoding="utf-8").read() == "You are QA.\n\n## Tail\n- keep\n"
+        for x in ("team", "team-dev", "teamx", "solo"):
+            os.makedirs(f"{root}/profiles/{x}")
+        pms = leads(root)
+        assert pms == {"team"}, pms
+        pm, tm = {"profiles": "@pm"}, {"profiles": "@team", "exclude": "team-qa"}
+        assert [n for n in ("team", "team-dev", "teamx", "solo") if applies(pm, n, pms)] == ["team"]
+        assert [n for n in ("team", "team-dev", "team-qa", "teamx", "solo") if applies(tm, n, pms)] == ["team", "team-dev"]
         w(f"{d}/jobs.json", json.dumps({"jobs": [{"id": "a1", "name": "issue handler"}, {"id": "b2", "name": "kanban doctor"}]}))
         assert doctor_job_id(f"{d}/jobs.json") == "b2" and doctor_job_id(f"{d}/missing.json") is None
         w(f"{root}/profiles/team-qa/auto-mode.json", json.dumps({"enabled": True, "since": "2026-11-03T22:28:12+05:30"}))
