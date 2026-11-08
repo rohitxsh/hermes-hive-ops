@@ -66,20 +66,29 @@ def kanban_running():
 
 
 def last_inbound():
-    """Epoch of the latest inbound chat message in the gateway log (0 if none in its tail)."""
+    """Epoch of the latest inbound chat message: the newest user message in any profile's state.db (Hermes >= 0.23 no
+    longer logs "inbound message:" at INFO), or the gateway log line older versions write, whichever is later."""
+    best = 0.0
+    for db in [os.path.join(HERMES_DIR, "state.db")] + glob.glob(os.path.join(HERMES_DIR, "profiles", "*", "state.db")):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            best = max(best, con.execute("select coalesce(max(timestamp), 0) from messages where role = 'user'").fetchone()[0] or 0)
+            con.close()
+        except sqlite3.Error:
+            continue
     try:
         with open(GATEWAY_LOG, "rb") as fh:
             fh.seek(max(0, os.path.getsize(GATEWAY_LOG) - 400_000))
             lines = fh.read().decode("utf-8", "replace").splitlines()
     except OSError:
-        return 0
+        return best
     for line in reversed(lines):
         if "inbound message:" in line:
             try:
-                return time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S"))
+                return max(best, time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S")))
             except ValueError:
-                return 0
-    return 0
+                break
+    return best
 
 
 def systemctl(*args):

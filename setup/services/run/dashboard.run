@@ -7,4 +7,7 @@ export PATH="$HOME/.local/bin:$PATH"
 host=127.0.0.1
 f="$HOME/.config/hermes-ui/dashboard.env"
 if [ -s "$f" ]; then set -a; . "$f"; set +a; host=0.0.0.0; fi
+# login signing key (`ui-password signing`), so a restart keeps people signed in
+c="${CREDENTIALS_DIRECTORY:-/nonexistent}/dashboard_signing_secret"
+[ -f "$c" ] && { HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(<"$c"); export HERMES_DASHBOARD_BASIC_AUTH_SECRET; }
 exec "$HOME/.local/bin/hermes" dashboard --host "$host" --port 9119 --no-open

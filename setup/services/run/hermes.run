@@ -5,5 +5,7 @@ set -euo pipefail
 DISCORD_BOT_TOKEN=$(<"$CREDENTIALS_DIRECTORY/discord_bot_token"); export DISCORD_BOT_TOKEN
 [ -f "$CREDENTIALS_DIRECTORY/openrouter_api_key" ] && { OPENROUTER_API_KEY=$(<"$CREDENTIALS_DIRECTORY/openrouter_api_key"); export OPENROUTER_API_KEY; }
 [ -f "$CREDENTIALS_DIRECTORY/hermes_api_key" ] && { API_SERVER_KEY=$(<"$CREDENTIALS_DIRECTORY/hermes_api_key"); export API_SERVER_KEY; }
+# Webapp login signing key (`ui-password signing`), so a restart keeps people signed in
+[ -f "$CREDENTIALS_DIRECTORY/webapp_signing_secret" ] && { HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(<"$CREDENTIALS_DIRECTORY/webapp_signing_secret"); export HERMES_DASHBOARD_BASIC_AUTH_SECRET; }
 export PATH="$HOME/.local/bin:$PATH"
 exec "$HOME/.local/bin/hermes" gateway run --replace --external-supervisor

@@ -130,7 +130,7 @@ hub skills by role: Hermes's official `ast-grep` and Android's [agp-9-upgrade](h
 Hermes's Chromium via `PLAYWRIGHT_MCP_EXECUTABLE_PATH`), Trail of Bits'
 [differential-review](https://github.com/trailofbits/skills) for `*-architect` and `*-qa`, with `@ast-grep/cli` 0.51.1
 (only `ast-grep` on PATH; `sg` stays util-linux's) and `@playwright/cli` 0.1.23 in user npm prefixes. The web UIs are Hermes's own: the Webapp (gateway, LAN :9120) and the dashboard (LAN :9119), each with its own
-password from `tools/ui-password/ui-password webapp|dashboard`; hermes-webui and hermes-workspace are no longer used.
+password from `tools/ui-password/ui-password webapp|dashboard`; `ui-password signing` seals random login-signing keys for both, so a restart no longer signs people out; hermes-webui and hermes-workspace are no longer used.
 
 ### Attention renewals
 
