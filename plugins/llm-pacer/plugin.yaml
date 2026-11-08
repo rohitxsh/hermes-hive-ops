@@ -2,3 +2,7 @@ name: llm-pacer
 version: 1.0.0
 description: "Keeps a small minimum gap between this profile's model API calls (HERMES_LLM_MIN_GAP_SECONDS, default 2) so bursts don't trip provider rate limits."
 author: hermes-hive-ops
+requires_hermes: ">=0.23.0"
+provides_tools: []
+provides_hooks:
+  - pre_api_request

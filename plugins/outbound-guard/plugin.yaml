@@ -1,4 +1,8 @@
 name: outbound-guard
 version: 1.0.0
-description: "Asks the owner before a tool call sends what looks like a payment card, Aadhaar or PAN number off this machine (messages, browser, web search, network commands); unattended runs are blocked. Local, 2026-11-01."
+description: "Asks the owner before a tool call sends what looks like a payment card, Aadhaar or PAN number off this machine (messages, browser, web search, network commands); unattended runs are blocked."
 author: hermes-hive-ops
+requires_hermes: ">=0.23.0"
+provides_tools: []
+provides_hooks:
+  - pre_tool_call
