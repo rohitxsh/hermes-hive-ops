@@ -22,7 +22,10 @@ KIND = {"approval": "approve a command", "clarify": "answer a question"}
 
 def heading(env):
     """First line of a ping. APPROVAL_PING=here in ~/.hermes/.env pings @here (a team where anyone may approve);
+    APPROVAL_PING=team posts to the team without @here (the leading @nohere is the team @here patch's opt-out token);
     otherwise the owner, the first ID in DISCORD_ALLOWED_USERS."""
+    if re.search(r"^APPROVAL_PING=['\"]?team\b", env, re.M):
+        return "@nohere Waiting for team/human input:"
     if re.search(r"^APPROVAL_PING=['\"]?here\b", env, re.M):
         return "@here waiting for team/human input:"
     m = re.search(r"^DISCORD_ALLOWED_USERS=['\"]?(\d+)", env, re.M)
@@ -115,6 +118,7 @@ def selftest():
     assert pending(recs, set(), now + MAX_AGE + 100)[1] == ["kanban:t1:1"]                      # past the wait: no ping
     assert heading("DISCORD_ALLOWED_USERS=42,7\n") == "<@42> waiting for you:"
     assert heading("x=1\nAPPROVAL_PING=here\nDISCORD_ALLOWED_USERS=1\n").startswith("@here ") and heading("") == "waiting for you:"
+    assert heading("APPROVAL_PING=team\n").startswith("@nohere ")
     print("approval-notify selftest ok")
 
 

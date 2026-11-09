@@ -4,7 +4,7 @@ from plugins.platforms.discord import adapter as a
 
 
 class HerePayloadTests(unittest.TestCase):
-    def test_notification_has_one_here_and_no_other_live_mentions(self):
+    def test_notification_has_one_here_and_keeps_person_tags(self):
         text, kwargs = a._team_notification_payload(
             '@here <@100000000000000001> approval: @everyone and @here <@&123>',
             enabled=True, notify=True,
@@ -12,10 +12,10 @@ class HerePayloadTests(unittest.TestCase):
         self.assertTrue(text.startswith('@here\n'))
         self.assertEqual(text.count('@here'), 1)
         self.assertNotIn('@everyone', text)
-        self.assertNotIn('<@100000000000000001>', text)
+        self.assertIn('<@100000000000000001>', text)
         mentions = kwargs['allowed_mentions']
         self.assertTrue(mentions.everyone)
-        self.assertFalse(mentions.users)
+        self.assertTrue(mentions.users)
         self.assertFalse(mentions.roles)
         self.assertFalse(mentions.replied_user)
 
@@ -64,16 +64,16 @@ def make_adapter():
 
 
 class SendRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cron_notification_pings_here_not_owner(self):
+    async def test_cron_notification_pings_here_and_tagged_owner(self):
         adapter, channel = make_adapter()
         result = await adapter.send('99', '<@100000000000000001> report @everyone', metadata={'job_id':'hourly', 'notify':True})
         self.assertTrue(result.success)
         payload = channel.send.call_args.kwargs
         self.assertTrue(payload['content'].startswith('@here\n'))
         self.assertNotIn('@everyone', payload['content'])
-        self.assertNotIn('<@100000000000000001>', payload['content'])
+        self.assertIn('<@100000000000000001>', payload['content'])
         self.assertTrue(payload['allowed_mentions'].everyone)
-        self.assertFalse(payload['allowed_mentions'].users)
+        self.assertTrue(payload['allowed_mentions'].users)
 
     async def test_normal_final_reply_does_not_broadcast(self):
         adapter, channel = make_adapter()
@@ -91,7 +91,7 @@ class PromptRouteTests(unittest.IsolatedAsyncioTestCase):
         payload = channel.send.call_args.kwargs
         self.assertTrue(payload['content'].startswith('@here\n'))
         self.assertNotIn('@everyone', payload['content'])
-        self.assertFalse(payload['allowed_mentions'].users)
+        self.assertTrue(payload['allowed_mentions'].users)
         self.assertEqual(payload['view'].allowed_user_ids, {'100000000000000001'})
 
     async def test_clarify_notifies_here(self):
@@ -111,7 +111,7 @@ class AdditionalRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         payload = msg.edit.call_args.kwargs
         self.assertNotIn('@everyone', payload['content'])
-        self.assertFalse(payload['allowed_mentions'].users)
+        self.assertTrue(payload['allowed_mentions'].users)
 
     async def test_long_cron_content_preserved_and_single_ping(self):
         adapter, channel = make_adapter()
@@ -142,7 +142,7 @@ class AdditionalRouteTests(unittest.IsolatedAsyncioTestCase):
         payload = channel.create_thread.call_args.kwargs
         self.assertTrue(payload['content'].startswith('@here\n'))
         self.assertNotIn('@everyone', payload['content'])
-        self.assertFalse(payload['allowed_mentions'].users)
+        self.assertTrue(payload['allowed_mentions'].users)
 
 
 class OverflowRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -157,7 +157,7 @@ class OverflowRouteTests(unittest.IsolatedAsyncioTestCase):
         payloads = [c.kwargs for c in msg.edit.call_args_list + channel.send.call_args_list]
         self.assertFalse(any('@everyone' in p['content'] for p in payloads))
         self.assertEqual(sum(p['content'].count('@here') for p in payloads), 1)
-        self.assertTrue(all(not p['allowed_mentions'].users for p in payloads))
+        self.assertTrue(all(p['allowed_mentions'].users and not p['allowed_mentions'].roles for p in payloads))
 
 
 class SilentTests(unittest.IsolatedAsyncioTestCase):
@@ -198,6 +198,21 @@ class SilentTests(unittest.IsolatedAsyncioTestCase):
         from gateway.response_filters import is_autonomous_silence_response
         self.assertFalse(is_autonomous_silence_response('@silent **Account usage**\n- Codex weekly: 40%'))
         self.assertTrue(is_autonomous_silence_response('@silent\n**Account usage**'))
+
+
+class NoHereTests(unittest.IsolatedAsyncioTestCase):
+    def test_nohere_drops_token_and_broadcast(self):
+        self.assertEqual(a._team_notification_payload('@nohere waiting for team input:\n- x', enabled=True, notify=True),
+                         ('waiting for team input:\n- x', {}))
+
+    async def test_nohere_cron_send(self):
+        adapter, channel = make_adapter()
+        result = await adapter.send('99', '@nohere waiting for team input:\n- card', metadata={'job_id': 'approval'})
+        self.assertTrue(result.success)
+        payload = channel.send.call_args.kwargs
+        self.assertEqual(payload['content'], 'waiting for team input:\n- card')
+        self.assertNotIn('allowed_mentions', payload)
+        self.assertNotIn('silent', payload)
 
 
 if __name__ == '__main__':

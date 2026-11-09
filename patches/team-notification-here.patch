@@ -2,7 +2,7 @@ diff --git a/plugins/platforms/discord/adapter.py b/plugins/platforms/discord/ad
 index e4a155574f..3e46e12d5e 100644
 --- a/plugins/platforms/discord/adapter.py
 +++ b/plugins/platforms/discord/adapter.py
-@@ -689,6 +689,27 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
+@@ -689,6 +689,30 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
      )
  
  
@@ -15,15 +15,18 @@ index e4a155574f..3e46e12d5e 100644
 +    silent = re.match(r"^\s*@silent(?:[ \t]+|[ \t]*(?:\n|$))", content)
 +    if silent:
 +        return content[silent.end():], ({"silent": True} if can_silence else {})
++    nohere = re.match(r"^\s*@nohere(?:[ \t]+|[ \t]*(?:\n|$))", content)
++    if nohere:
++        return content[nohere.end():], {}
 +    if not enabled or not (notify or re.match(r"^\s*@here(?:\s|$)", content)):
 +        return content, {}
 +    body = content.lstrip()
-+    prefix = r"^(?:@here(?=\s|$)|@Owner(?=\s|$)|<@!?100000000000000001>)\s*"
++    prefix = r"^(?:@here(?=\s|$)|@Owner(?=\s|$))\s*"  # <@id> tags stay (2026-11-09)
 +    while re.match(prefix, body):
 +        body = re.sub(prefix, "", body, count=1)
 +    body = body.replace("@everyone", "＠everyone").replace("@here", "＠here")
 +    return "@here\n" + body, {"allowed_mentions": discord.AllowedMentions(
-+        everyone=True, roles=False, users=False, replied_user=False,
++        everyone=True, roles=False, users=True, replied_user=False,
 +    )}
 +
 +
