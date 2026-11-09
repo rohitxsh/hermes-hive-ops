@@ -184,10 +184,9 @@ DEFAULT_KNOWN = (r"^gateway\.run: --replace target PID [0-9]+ is the host gatewa
                  # a Kanban card's workspace was cleaned up after it finished; voice is optional
                  r"^agent\.runtime_cwd: (TERMINAL_CWD|configured working directory) does not exist: \S*/\.hermes/kanban/workspaces/",
                  r"^hermes_plugins\.platforms__discord\.adapter: Opus codec not found",
-                 # the optional per-turn file checkpoint raced a nested repo with no commits or a file deleted mid-add;
-                 # the turn itself carries on (seen on both VMs, 2026-11-08/09)
-                 r"^tools\.checkpoint_manager: Git command failed: \S*git add -A.* stderr=error: .+ does not have a commit checked out",
-                 r"^tools\.checkpoint_manager: Git command failed: \S*git add -A.* stderr=error: unable to stat")
+                 # Hermes's optional per-turn file checkpoint failing its `git add -A` (nested repos, files deleted mid-add,
+                 # a scratch folder already gone): the turn itself carries on and nothing is lost (both VMs, 2026-11-08..10)
+                 r"^tools\.checkpoint_manager: Git command (?:failed|skipped): \S*git add -A")
 
 
 def known_patterns():
@@ -468,7 +467,9 @@ def selftest():
     ck = "tools.checkpoint_manager: Git command failed: /usr/bin/git add -A -- . (rc=128) stderr=error: "
     assert any(re.search(p, ck + "sub/repo does not have a commit checked out") for p in DEFAULT_KNOWN)
     assert any(re.search(p, ck + "unable to stat 'x.tmp': No such file or directory") for p in DEFAULT_KNOWN)
-    assert not any(re.search(p, ck + "pathspec did not match") for p in DEFAULT_KNOWN)
+    assert any(re.search(p, ck + "warning: adding embedded git repository: evidence-checkout") for p in DEFAULT_KNOWN)
+    assert any(re.search(p, "tools.checkpoint_manager: Git command skipped: git add -A (working directory not found: /x)") for p in DEFAULT_KNOWN)
+    assert not any(re.search(p, "tools.checkpoint_manager: Git command failed: /usr/bin/git commit -m x") for p in DEFAULT_KNOWN)
     assert normalize("Session 3fa9c1d2e4 paused after 12.5s") == "Session # paused after Ns"
     assert normalize("profile jobs failed") == "profile jobs failed"
     assert normalize('Tool terminal returned error (3s): {"output": "x"}') == "Tool terminal returned error"
