@@ -275,8 +275,17 @@ def main(args):
             if c["status"] == "done" and created and iss["state"] == "OPEN":
                 gh("issue", "close", str(n), "-R", repo, "--reason", "completed")
                 changed += 1
+        if not mp.get(f"noted:{c['id']}"):  # tell the card's agents once where its GitHub issue is
+            r = subprocess.run([f"{H}/.local/bin/hermes", "kanban", "comment", c["id"],
+                                f"GitHub issue for this card: #{n} https://github.com/{repo}/issues/{n} . Post deliverables there "
+                                "as one comment each (screens and images inline, docs linked) so the team can review and approve "
+                                "on the dashboard; people's replies there come back to this card.", "--author", "github"],
+                               capture_output=True, timeout=60)
+            if r.returncode == 0:
+                mp[f"noted:{c['id']}"] = True
         state = [d["status"], d["waiting"]]
         if mp.get(f"state:{c['id']}") == state:
+            json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
             continue  # nothing changed since the last run: skip the project calls
         url = f"https://github.com/{repo}/issues/{n}"
         item = json.loads(gh("project", "item-add", num, "--owner", owner, "--url", url, "--format", "json"))["id"]
