@@ -1,0 +1,237 @@
+#!/usr/bin/python3
+"""inbox (2026-11-09): one Discord forum post per person, so what waits on each person doesn't get lost in busy threads.
+No model calls.
+
+  inbox setup                create the forum channel and one post per person (idempotent; ids saved in the config)
+  inbox digest               post each person's full list in their post (daily cron), mentioning them once
+  inbox new                  post only items that became theirs since the last run (cron every 10 min; silent if none)
+  inbox show [KEY]           print what would be posted, without posting
+  inbox --selftest
+
+Config ~/agents/inbox/config.json:
+  {"guild": "...", "category": "...", "forum": null, "profile": "<PM profile for pending-human's repo>",
+   "default": "<key of the person who gets items with no named owner>",
+   "people": [{"key": "...", "name": "...", "discord": "<user id>", "aliases": ["..."], "github": ["..."], "post": null}]}
+Items come from `pending-human` (Kanban cards waiting on people, with their latest reason) and open PRs that need a
+person (assignees and review requests by GitHub login). A card belongs to everyone whose alias or <@id> appears in
+its reason (the waiting-on-people rule writes "waiting on <person> for <what>"); a card naming nobody goes to the
+default person under "Needs an owner". The bot token is read from the sealed credential and never printed."""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+H = os.path.expanduser("~")
+CONF = f"{H}/agents/inbox/config.json"
+STATE = f"{H}/agents/inbox/state.json"
+CRED = "/etc/credstore.encrypted/discord_bot_token"
+API = "https://discord.com/api/v10"
+
+
+def load_pending_human():
+    path = next(p for p in (f"{H}/.local/bin/pending-human", f"{H}/agents/src/pending-human/pending-human",
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pending-human", "pending-human"))
+                if os.path.exists(p))
+    loader = importlib.machinery.SourceFileLoader("pending_human", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("pending_human", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def token():
+    r = subprocess.run(["sudo", "-n", "systemd-creds", "decrypt", CRED, "-"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        sys.exit("inbox: can't read the bot token credential")
+    return r.stdout.strip()
+
+
+def api(tok, method, path, body=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bot {tok}", "Content-Type": "application/json",
+                                          "User-Agent": "DiscordBot (hermes-hive-ops inbox, 1.0)"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                time.sleep(float(json.loads(e.read() or b"{}").get("retry_after", 2)) + 0.5)
+                continue
+            raise
+
+
+def items_from(cards, prs, people, default):
+    """{key: [item]} where item = {id, text, link, hours, new_key}."""
+    out = {p["key"]: [] for p in people}
+    for c in cards:
+        reason = c.get("reason") or ""
+        # "waiting on <person> for <what>" names the owner; otherwise anyone named in the reason
+        w = re.search(r"waiting (?:on|for) (.{0,120}?)(?: for |[.;]|$)", reason, re.I)
+        scope = w.group(1) if w and any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", w.group(1), re.I) or f"<@{p['discord']}>" in w.group(1)
+                                        for p in people for a in p["aliases"]) else reason
+        hit = [p["key"] for p in people
+               if f"<@{p['discord']}>" in scope or any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", scope, re.I) for a in p["aliases"])]
+        link = re.search(r"https://(?:discord\.com/channels/\S+|github\.com/\S+/(?:pull|issues)/\d+)", reason)
+        thread = re.search(r"\b(1[0-9]{17,19})\b", reason)
+        item = {"id": c["id"], "title": c.get("title") or "", "summary": first_sentence(reason), "hours": c.get("waiting_hours"),
+                "link": link.group(0).rstrip(").,") if link else None, "thread": thread.group(1) if thread else None,
+                "owner_missing": not hit}
+        for k in hit or [default]:
+            out[k].append(item)
+    for pr in prs or []:
+        logins = {a.get("login", "").lower() for a in pr.get("assignees") or []}
+        logins |= {(r.get("login") or "").lower() for r in pr.get("reviewRequests") or []}
+        hit = [p["key"] for p in people if logins & {g.lower() for g in p.get("github", [])}] or [default]
+        for k in hit:
+            out[k].append({"id": f"pr{pr['number']}", "title": f"PR #{pr['number']}: {pr['title']}", "summary": pr_state(pr),
+                           "hours": None, "link": pr["url"], "thread": None, "owner_missing": False})
+    return out
+
+
+def first_sentence(text):
+    text = re.sub(r"\s+", " ", text).strip()
+    m = re.match(r"(.{20,180}?[.;:])(\s|$)", text)
+    return (m.group(1) if m else text[:180]).strip()
+
+
+def pr_state(pr):
+    labels = {lb["name"] for lb in pr.get("labels") or []}
+    if "human-signoff" in labels:
+        return "needs a person's sign-off"
+    return {"CHANGES_REQUESTED": "changes requested", "REVIEW_REQUIRED": "review requested"}.get(pr.get("reviewDecision"), "needs a person")
+
+
+def render(person, items, guild, full):
+    lines = []
+    for it in sorted(items, key=lambda i: -(i["hours"] or 0)):
+        where = it["link"] or (f"https://discord.com/channels/{guild}/{it['thread']}" if it["thread"] else f"card {it['id']}")
+        age = f" · waiting {fmt_age(it['hours'])}" if it["hours"] else ""
+        flag = "**Needs an owner:** " if it["owner_missing"] else ""
+        lines.append(f"• {flag}{it['title'][:100]}{age}\n  {it['summary']} → {where}")
+    if not lines:
+        return f"<@{person['discord']}> Nothing is waiting on you today." if full else ""
+    head = (f"<@{person['discord']}> **Waiting on you** ({len(lines)}), oldest first. Reply in each item's own thread; "
+            f"if it isn't yours, say who should take it." if full else f"<@{person['discord']}> **New for you:**")
+    return head + "\n" + "\n".join(lines)
+
+
+def fmt_age(h):
+    return f"{h:.0f}h" if h < 48 else f"{h / 24:.0f} days"
+
+
+def chunks(text, n=1900):
+    out, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > n:
+            out.append(cur)
+            cur = ""
+        cur += line + "\n"
+    return [c for c in out + [cur] if c.strip()]
+
+
+def gather(conf):
+    ph = load_pending_human()
+    cards = ph.waiting_cards(f"{H}/.hermes/kanban.db", time.time())
+    repo = ph.REPOS.get(conf.get("profile"), (None, None))[0]
+    prs = None
+    if repo:
+        r = subprocess.run([f"{H}/.local/bin/gh", "pr", "list", "-R", repo, "--json",
+                            "number,title,url,labels,reviewDecision,isDraft,assignees,reviewRequests"],
+                           capture_output=True, text=True, timeout=60)
+        prs = [p for p in json.loads(r.stdout or "[]") if ph.needs_human(p)] if r.returncode == 0 else None
+    return items_from(cards, prs, conf["people"], conf["default"])
+
+
+def setup(conf):
+    tok = token()
+    if not conf.get("forum"):
+        ch = api(tok, "POST", f"/guilds/{conf['guild']}/channels", {
+            "name": "inbox", "type": 15, "parent_id": conf.get("category"),
+            "topic": "One post per person: what is waiting on you, refreshed every morning, plus a note when something new "
+                     "becomes yours. Follow your own post. Reply in each item's own thread."})
+        conf["forum"] = ch["id"]
+        save(conf)
+    for p in conf["people"]:
+        if p.get("post"):
+            continue
+        th = api(tok, "POST", f"/channels/{conf['forum']}/threads", {
+            "name": f"Inbox · {p['name']}", "auto_archive_duration": 10080,
+            "message": {"content": f"<@{p['discord']}> this is your inbox: every morning the list of what waits on you, "
+                                   f"and a short note when something new becomes yours. Follow this post so it stays in "
+                                   f"your list.", "allowed_mentions": {"users": [p["discord"]]}}})
+        p["post"] = th["id"]
+        save(conf)
+    print(f"inbox ready: forum {conf['forum']}, {len(conf['people'])} posts")
+
+
+def post(tok, p, text):
+    for part in chunks(text):
+        api(tok, "POST", f"/channels/{p['post']}/messages", {"content": part, "allowed_mentions": {"users": [p["discord"]]}})
+
+
+def save(conf):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    json.dump(conf, open(CONF, "w"), indent=1)
+
+
+def main(args):
+    if args[:1] == ["--selftest"]:
+        return selftest()
+    if not os.path.exists(CONF):
+        return  # not configured on this machine: nothing to do
+    conf = json.load(open(CONF))
+    cmd = args[0] if args else "show"
+    if cmd == "setup":
+        return setup(conf)
+    items = gather(conf)
+    if cmd == "show":
+        for p in conf["people"]:
+            if not args[1:] or p["key"] in args[1:]:
+                print(f"== {p['key']}\n{render(p, items[p['key']], conf['guild'], True)}\n")
+        return
+    state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+    tok = None
+    for p in conf["people"]:
+        mine = items[p["key"]]
+        seen = set(state.get(p["key"], []))
+        fresh = [i for i in mine if i["id"] not in seen]
+        text = render(p, mine, conf["guild"], True) if cmd == "digest" else render(p, fresh, conf["guild"], False)
+        if text and p.get("post") and (cmd == "digest" or (fresh and seen is not None and p["key"] in state)):
+            tok = tok or token()
+            post(tok, p, text)
+        state[p["key"]] = sorted(i["id"] for i in mine)
+    json.dump(state, open(STATE, "w"))
+
+
+def selftest():
+    people = [{"key": "r", "name": "R", "discord": "1", "aliases": ["owner1", "Owner"], "github": ["owner-gh"]},
+              {"key": "a", "name": "A", "discord": "2", "aliases": ["devops1"], "github": ["ops-gh"]}]
+    cards = [{"id": "t_1", "title": "Email sender", "reason": "Waiting on devops1 (provider) and owner1 (DNS) for the answers. "
+              "https://discord.com/channels/9/1000000000000000040", "waiting_hours": 30},
+             {"id": "t_2", "title": "Notice facts", "reason": "Awaiting the team's answer in thread 1000000000000000050.", "waiting_hours": 3},
+             {"id": "t_3", "title": "x", "reason": "Ask <@2> about it.", "waiting_hours": 1},
+             {"id": "t_4", "title": "y", "reason": "Ownerxsh-bot detail and @Owner2 aren't Owner's alias? Owner is.", "waiting_hours": 1},
+             {"id": "t_5", "title": "z", "reason": "Owner asked for this earlier. Waiting on devops1 for the provider.", "waiting_hours": 2}]
+    prs = [{"number": 5, "title": "Builds", "url": "https://github.com/o/r/pull/5", "labels": [{"name": "human-signoff"}],
+            "assignees": [{"login": "Ops-GH"}], "reviewRequests": []}]
+    out = items_from(cards, prs, people, "r")
+    assert [i["id"] for i in out["a"]] == ["t_1", "t_3", "t_5", "pr5"], out["a"]   # t_5: only the waiting-on person
+    assert [i["id"] for i in out["r"]] == ["t_1", "t_2", "t_4"], out["r"]
+    assert out["r"][1]["owner_missing"] and not out["r"][0]["owner_missing"]
+    assert out["r"][0]["link"] == "https://discord.com/channels/9/1000000000000000040"
+    txt = render(people[0], out["r"], "9", True)
+    assert txt.startswith("<@1> **Waiting on you** (3)") and "**Needs an owner:**" in txt and "discord.com/channels/9/1000000000000000050" in txt
+    assert render(people[0], [], "9", False) == "" and "Nothing is waiting" in render(people[0], [], "9", True)
+    assert all(len(c) <= 1900 for c in chunks("x" * 100 + "\n" + ("y" * 80 + "\n") * 60))
+    assert first_sentence("Blocked — needs the four answers: provider, account. More text here.") == "Blocked — needs the four answers:"
+    print("inbox selftest ok")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
