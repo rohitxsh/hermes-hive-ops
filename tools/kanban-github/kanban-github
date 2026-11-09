@@ -66,19 +66,21 @@ def status_for(status, kind, reason, people):
     if status == "blocked":
         return "Needs Clarification" if kind == "needs_input" else "Blocked"
     if status == "scheduled":
-        w = re.search(r"waiting (?:on|for) (.{0,120})", reason or "", re.I)
-        if w and any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", w.group(1), re.I) for p in people for a in p.get("aliases", [])):
-            return "Awaiting Human Approval"
-        return "Paused"
+        return "Awaiting Human Approval" if waiting_on(status, reason, people) else "Paused"
     return STATUS.get(status)
+
+
+def waiting_scope(reason):
+    """The "<who>" in "waiting on <who> for <what>" (up to " for ", a sentence end or a bracket), or ""."""
+    w = re.search(r"waiting (?:on|for) (.{0,120}?)(?= for |[.;](?:\s|$)|\(|$)", reason or "", re.I)
+    return w.group(1) if w else ""
 
 
 def waiting_on(status, reason, people):
     """Names of the people a parked or blocked card waits on (from "waiting on <person> for <what>"), else ""."""
     if status not in ("scheduled", "blocked", "triage"):
         return ""
-    w = re.search(r"waiting (?:on|for) (.{0,120}?)(?: for |[.;]|$)", reason or "", re.I)
-    scope = w.group(1) if w else ""
+    scope = waiting_scope(reason)
     return ", ".join(p.get("name") or p["key"] for p in people
                      if any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", scope, re.I) for a in p.get("aliases", [])))
 
@@ -308,6 +310,7 @@ def selftest():
     assert sanitize("See t_1234abcd and ~/work/x/docs/a.md in the Kanban card") == "See and in the task task"
     assert status_for("scheduled", "", "waiting on founder1 for facts", people) == "Awaiting Human Approval"
     assert status_for("scheduled", "", "waiting on capacity after v1.0", people) == "Paused"
+    assert status_for("scheduled", "", "waiting on capacity after v1.0 (guard off the path, owner2 2026-11-09)", people) == "Paused"
     names = {"gh-a": "Owner Two"}
     assert describe_event({"event": "assigned", "actor": {"login": "gh-a"}, "assignee": {"login": "gh-b"}}, names) == "Owner Two assigned gh-b"
     assert describe_event({"event": "milestoned", "actor": {"login": "x"}, "milestone": {"title": "Week 2"}}, names) == "x set the week to Week 2"

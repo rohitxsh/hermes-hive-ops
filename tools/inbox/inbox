@@ -66,17 +66,29 @@ def api(tok, method, path, body=None):
             raise
 
 
+def waiting_scope(reason):
+    """The "<who>" in "waiting on <who> for <what>" (up to " for ", a sentence end or a bracket), or None."""
+    w = re.search(r"waiting (?:on|for) (.{0,120}?)(?= for |[.;](?:\s|$)|\(|$)", reason or "", re.I)
+    return w.group(1) if w else None
+
+
 def items_from(cards, prs, people, default):
     """{key: [item]} where item = {id, text, link, hours, new_key}."""
     out = {p["key"]: [] for p in people}
     for c in cards:
         reason = c.get("reason") or ""
-        # "waiting on <person> for <what>" names the owner; otherwise anyone named in the reason
-        w = re.search(r"waiting (?:on|for) (.{0,120}?)(?: for |[.;]|$)", reason, re.I)
-        scope = w.group(1) if w and any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", w.group(1), re.I) or f"<@{p['discord']}>" in w.group(1)
-                                        for p in people for a in p["aliases"]) else reason
-        hit = [p["key"] for p in people
-               if f"<@{p['discord']}>" in scope or any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", scope, re.I) for a in p["aliases"])]
+        named = lambda text: [p["key"] for p in people if f"<@{p['discord']}>" in text
+                              or any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", text, re.I) for a in p["aliases"])]
+        w = waiting_scope(reason)
+        if w is not None:
+            # "waiting on <person> for <what>" names the owner; "waiting on capacity/another card" is no person's item
+            hit = named(w)
+            if not hit:
+                continue
+        elif c.get("status") == "scheduled":
+            continue  # parked on time or another event, with no person named: not a human wait
+        else:
+            hit = named(reason)
         link = re.search(r"https://(?:discord\.com/channels/\S+|github\.com/\S+/(?:pull|issues)/\d+)", reason)
         thread = re.search(r"\b(1[0-9]{17,19})\b", reason)
         item = {"id": c["id"], "title": c.get("title") or "", "summary": first_sentence(reason), "hours": c.get("waiting_hours"),
@@ -217,16 +229,20 @@ def selftest():
              {"id": "t_2", "title": "Notice facts", "reason": "Awaiting the team's answer in thread 1000000000000000050.", "waiting_hours": 3},
              {"id": "t_3", "title": "x", "reason": "Ask <@2> about it.", "waiting_hours": 1},
              {"id": "t_4", "title": "y", "reason": "Ownerxsh-bot detail and @Owner2 aren't Owner's alias? Owner is.", "waiting_hours": 1},
-             {"id": "t_5", "title": "z", "reason": "Owner asked for this earlier. Waiting on devops1 for the provider.", "waiting_hours": 2}]
+             {"id": "t_5", "title": "z", "reason": "Owner asked for this earlier. Waiting on devops1 for the provider.", "waiting_hours": 2},
+             {"id": "t_6", "title": "parked", "status": "scheduled", "waiting_hours": 1,
+              "reason": "waiting on capacity after v1.0 (guard off the path, Owner 2026-11-09)"},
+             {"id": "t_7", "title": "event", "status": "scheduled", "reason": "Partly done; resumes on the build event.", "waiting_hours": 9}]
     prs = [{"number": 5, "title": "Builds", "url": "https://github.com/o/r/pull/5", "labels": [{"name": "human-signoff"}],
             "assignees": [{"login": "Ops-GH"}], "reviewRequests": []}]
     out = items_from(cards, prs, people, "r")
     assert [i["id"] for i in out["a"]] == ["t_1", "t_3", "t_5", "pr5"], out["a"]   # t_5: only the waiting-on person
-    assert [i["id"] for i in out["r"]] == ["t_1", "t_2", "t_4"], out["r"]
-    assert out["r"][1]["owner_missing"] and not out["r"][0]["owner_missing"]
-    assert out["r"][0]["link"] == "https://discord.com/channels/9/1000000000000000040"
+    assert [i["id"] for i in out["r"]] == ["t_2", "t_4"], out["r"]   # t_1: one primary owner (before the bracket); t_6/t_7: no person
+    assert out["r"][0]["owner_missing"] and not out["r"][1]["owner_missing"]
+    assert waiting_scope("waiting on capacity after v1.0 (x, Owner)") == "capacity after v1.0 "
+    assert out["a"][0]["link"] == "https://discord.com/channels/9/1000000000000000040"
     txt = render(people[0], out["r"], "9", True)
-    assert txt.startswith("<@1> **Waiting on you** (3)") and "**Needs an owner:**" in txt and "discord.com/channels/9/1000000000000000050" in txt
+    assert txt.startswith("<@1> **Waiting on you** (2)") and "**Needs an owner:**" in txt and "discord.com/channels/9/1000000000000000050" in txt
     assert render(people[0], [], "9", False) == "" and "Nothing is waiting" in render(people[0], [], "9", True)
     assert all(len(c) <= 1900 for c in chunks("x" * 100 + "\n" + ("y" * 80 + "\n") * 60))
     assert first_sentence("Blocked — needs the four answers: provider, account. More text here.") == "Blocked — needs the four answers:"
