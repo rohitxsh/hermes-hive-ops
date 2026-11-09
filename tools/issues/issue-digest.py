@@ -66,6 +66,9 @@ def profiles():
             yield os.path.basename(home), home
 
 
+HOME_SUFFIX = re.compile(r"__home_[0-9a-f]{8,}$")
+
+
 def normalize(msg):
     m = re.sub(r"^(Tool \S+ returned error).*", r"\1", msg)  # agents handle their own tool errors: one group per tool
     m = re.sub(r"/home/[^/\s]+", "~", m)
@@ -127,6 +130,8 @@ def collect(state, now, jobs):
             when = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
             if when >= cutoff and not QUOTA.search(m.group(4)):
                 level, source, msg = m.group(2), m.group(3), m.group(4)
+                # a plugin loaded once per profile logs as <plugin>__home_<hash>: one issue, not one per profile
+                source = HOME_SUFFIX.sub("", source)
                 yield f"{level}|{source}|{normalize(msg)}", level, source, name, msg, when
     for (name, job_id), job in jobs.items():
         if job.get("last_status") == "error" and job.get("last_run_at"):
@@ -458,6 +463,8 @@ issues known-add <id> '<regex anchored as ^source: ...>' <why>"""
 
 
 def selftest():
+    assert HOME_SUFFIX.sub("", "hermes_plugins.ops_core__home_689f9f24e9cb") == "hermes_plugins.ops_core"
+    assert HOME_SUFFIX.sub("", "hermes_plugins.ops_core") == "hermes_plugins.ops_core"
     ck = "tools.checkpoint_manager: Git command failed: /usr/bin/git add -A -- . (rc=128) stderr=error: "
     assert any(re.search(p, ck + "sub/repo does not have a commit checked out") for p in DEFAULT_KNOWN)
     assert any(re.search(p, ck + "unable to stat 'x.tmp': No such file or directory") for p in DEFAULT_KNOWN)
