@@ -1,0 +1,331 @@
+#!/usr/bin/python3
+"""kanban-github (2026-11-10): mirror the team's Hermes Kanban work cards into GitHub issues on a Projects (v2) board, so
+the GitHub project is the team's dashboard. No model calls; uses the gh wrapper.
+
+  kanban-github plan         dry run: what would be created or changed (no writes)
+  kanban-github sync         create missing issues, keep title, assignees, labels, week milestone and project Status in step
+  kanban-github --selftest
+
+Config ~/agents/kanban-github/config.json:
+  repo, owner, project            GitHub repo ("ORG/REPO"), project owner and number
+  people_from                     a config with "people" (aliases + github logins), e.g. ~/agents/inbox/config.json
+  role_github, role_labels        per Kanban assignee profile: fallback GitHub assignees, labels
+  include_title, exclude_title    regexes on card titles; exclude_assignees: profiles never mirrored (e.g. the admin)
+  weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
+  owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
+A card that names an existing issue ("issue #N" or "#N" in its title) maps to it; otherwise one issue is created. The
+mapping lives in ~/agents/kanban-github/map.json; GitHub never sees card ids or VM paths. Status follows the card
+(todo Backlog, ready Ready, running In Progress, review In Review, waiting on a person Awaiting Human Approval, parked
+Paused, blocked Blocked, needs_input Needs Clarification) except while the issue has a linked PR (board-sync owns those).
+A done card closes the issue it created."""
+import datetime
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+
+H = os.path.expanduser("~")
+D = f"{H}/agents/kanban-github"
+GH = f"{H}/.local/bin/gh"
+STATUS = {"todo": "Backlog", "ready": "Ready", "running": "In Progress", "review": "In Review", "triage": "Blocked"}
+MONTHS = {"Oct": 10, "Nov": 11, "Dec": 12, "Jan": 1}
+
+
+def sanitize(text):
+    text = re.sub(r"\bt_[0-9a-f]{8}\b", "", text or "")
+    text = re.sub(r"(?:~|/home/[\w.-]+)/[\w./-]+", "", text)
+    text = re.sub(r"\b(?:Kanban|card|run ?\d+|handoff ?\d+|comment ?\d+)\b", lambda m: "task" if m.group(0) in ("Kanban", "card") else "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def week_for(text, weeks, year=2026):
+    m = re.search(r"\b(\d{1,2})(?:\s*[–-]\s*\d{1,2})?\s+(Oct|Nov|Dec|Jan)\b", text or "")
+    if not m:
+        return None
+    d = datetime.date(year + (1 if m.group(2) == "Jan" else 0), MONTHS[m.group(2)], int(m.group(1)))
+    for w in weeks:
+        if datetime.date.fromisoformat(w["start"]) <= d <= datetime.date.fromisoformat(w["due"]):
+            return w["title"]
+    return None
+
+
+def owners(text, people):
+    head = re.split(r"\bAC ?1\b|\bAC:", text or "", maxsplit=1)[0][:600]
+    hit = []
+    for p in people:
+        if any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", head, re.I) for a in p.get("aliases", [])):
+            hit.append(p)
+    return hit
+
+
+def status_for(status, kind, reason, people):
+    if status == "blocked":
+        return "Needs Clarification" if kind == "needs_input" else "Blocked"
+    if status == "scheduled":
+        w = re.search(r"waiting (?:on|for) (.{0,120})", reason or "", re.I)
+        if w and any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", w.group(1), re.I) for p in people for a in p.get("aliases", [])):
+            return "Awaiting Human Approval"
+        return "Paused"
+    return STATUS.get(status)
+
+
+def waiting_on(status, reason, people):
+    """Names of the people a parked or blocked card waits on (from "waiting on <person> for <what>"), else ""."""
+    if status not in ("scheduled", "blocked", "triage"):
+        return ""
+    w = re.search(r"waiting (?:on|for) (.{0,120}?)(?: for |[.;]|$)", reason or "", re.I)
+    scope = w.group(1) if w else ""
+    return ", ".join(p.get("name") or p["key"] for p in people
+                     if any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", scope, re.I) for a in p.get("aliases", [])))
+
+
+def mirrored(card, conf):
+    if card["assignee"] in conf.get("exclude_assignees", []):
+        return False
+    if conf.get("exclude_title") and re.search(conf["exclude_title"], card["title"]):
+        return False
+    return bool(re.search(conf.get("include_title", "."), card["title"]))
+
+
+def referenced_issue(card):
+    """An existing issue the card names in its title, or as "issue #N" / "issues/N" early in its body (never a PR)."""
+    m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or \
+        re.search(r"\bissues? ?#(\d{1,4})\b|/issues/(\d{1,4})\b", card.get("body", "")[:300])
+    return int(next(g for g in m.groups() if g)) if m else None
+
+
+def cards(conf):
+    c = sqlite3.connect(f"file:{H}/.hermes/kanban.db?mode=ro", uri=True, timeout=10)
+    out = []
+    for tid, status, who, title, body, kind in c.execute(
+            "select id, status, assignee, title, body, coalesce(block_kind,'') from tasks where status != 'archived'"):
+        reason = c.execute("select payload from task_events where task_id=? and kind in ('blocked','scheduled') "
+                           "order by created_at desc limit 1", (tid,)).fetchone()
+        try:
+            reason = (json.loads(reason[0] or "{}") or {}).get("reason", "") if reason else ""
+        except ValueError:
+            reason = ""
+        out.append({"id": tid, "status": status, "assignee": who or "", "title": title or "", "body": body or "",
+                    "kind": kind, "reason": reason})
+    return out
+
+
+def gh(*args, check=True):
+    r = subprocess.run([GH, *args], capture_output=True, text=True, timeout=90)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:300]}")
+    return r.stdout
+
+
+def desired(card, conf, people):
+    who = owners(card["body"], people)
+    logins = sorted({g for p in who for g in p.get("github", [])}) or conf.get("role_github", {}).get(card["assignee"], [])
+    labels = list(conf.get("role_labels", {}).get(card["assignee"], []))
+    if conf.get("owner_label") and any(not p.get("github") for p in who):
+        labels.append(conf["owner_label"])
+    summary = sanitize(card["body"])[:1800]
+    body = (f"{summary}\n\n---\n_Status, owners and target week on this issue follow the team's task tracker automatically._")
+    return {"title": sanitize(card["title"])[:240], "body": body, "assignees": logins, "labels": sorted(set(labels)),
+            "milestone": week_for(card["title"] + " " + card["body"][:400], conf.get("weeks", [])),
+            "status": "Done" if card["status"] == "done" else status_for(card["status"], card["kind"], card["reason"], people),
+            "waiting": waiting_on(card["status"], card["reason"], people)}
+
+
+EVENTS = {"closed": "closed the issue", "reopened": "reopened the issue", "assigned": "assigned {who}",
+          "unassigned": "unassigned {who}", "milestoned": "set the week to {ms}", "demilestoned": "removed the week {ms}",
+          "labeled": "added the label {label}", "unlabeled": "removed the label {label}"}
+
+
+def describe_event(e, names):
+    who = (e.get("assignee") or {}).get("login", "")
+    text = EVENTS[e["event"]].format(who=names.get(who, who), ms=(e.get("milestone") or {}).get("title", ""),
+                                     label=(e.get("label") or {}).get("name", ""))
+    actor = e["actor"]["login"]
+    return f"{names.get(actor, actor)} {text}"
+
+
+def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
+    """People's comments and changes on mirrored issues -> a comment on the card ("[GitHub #N] ..."), and the card is
+    woken if it was parked or blocked, so its agent acts on it. Agent logins (conf["agent_logins"]) are skipped."""
+    since = mp.get("back_since")
+    if not since:
+        mp["back_since"] = now_iso  # first run: start from now, don't replay history
+        return []
+    repo, agents = conf["repo"], {a.lower() for a in conf.get("agent_logins", [])}
+    by_issue = {v: k for k, v in mp.items() if k.startswith("t_") and isinstance(v, int)}
+    names = {g: p.get("name") or p["key"] for p in people for g in p.get("github", [])}
+    notes = []
+    for cm in json.loads(gh("api", f"repos/{repo}/issues/comments?since={since}&per_page=100")):
+        n = int(cm["issue_url"].rsplit("/", 1)[1])
+        if n in by_issue and cm["user"]["login"].lower() not in agents and cm["created_at"] > since:
+            who = names.get(cm["user"]["login"], cm["user"]["login"])
+            notes.append((by_issue[n], f"[GitHub #{n}] {who} commented: {cm['body'][:1500]}"))
+    for e in json.loads(gh("api", f"repos/{repo}/issues/events?per_page=100")):
+        n = (e.get("issue") or {}).get("number")
+        if (n in by_issue and e["event"] in EVENTS and e["created_at"] > since and e.get("actor")
+                and e["actor"]["login"].lower() not in agents and not (e.get("issue") or {}).get("pull_request")):
+            notes.append((by_issue[n], f"[GitHub #{n}] {describe_event(e, names)}"))
+    woken = set()
+    for card, text in notes:
+        if dry:
+            print("would note", card, text[:120])
+            continue
+        subprocess.run([f"{H}/.local/bin/hermes", "kanban", "comment", card, text + "\n(Copied from GitHub. Treat it as a "
+                        "message from that person: act on it, and keep the card's owner and week in step with it.)",
+                        "--author", "github"], capture_output=True, timeout=60)
+        if cards_by_id.get(card, {}).get("status") in ("blocked", "scheduled") and card not in woken:
+            subprocess.run([f"{H}/.local/bin/hermes", "kanban", "unblock", card, "--reason", "A person changed or commented "
+                            "on its GitHub issue"], capture_output=True, timeout=60)
+            woken.add(card)
+    if not dry:
+        mp["back_since"] = now_iso
+    return notes
+
+
+def main(args):
+    if args[:1] == ["--selftest"]:
+        return selftest()
+    conf = json.load(open(f"{D}/config.json"))
+    if args[:1] == ["sync"]:  # one sync at a time: two would race on map.json and could create duplicate issues
+        import fcntl
+        lock = open(f"{D}/.lock", "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+    people = json.load(open(os.path.expanduser(conf["people_from"])))["people"] if conf.get("people_from") else []
+    mp = json.load(open(f"{D}/map.json")) if os.path.exists(f"{D}/map.json") else {}
+    dry = not args or args[0] == "plan"
+    repo, owner, num = conf["repo"], conf["owner"], str(conf["project"])
+    todo = [c for c in cards(conf) if mirrored(c, conf) and (c["status"] != "done" or c["id"] in mp)]
+    if dry:
+        new = [c for c in todo if c["id"] not in mp and not referenced_issue(c)]
+        print(f"{len(todo)} cards mirrored: {len(new)} new issues, {len(todo) - len(new)} existing")
+        for c in todo:
+            d = desired(c, conf, people)
+            tag = f"#{mp.get(c['id']) or referenced_issue(c)}" if (c["id"] in mp or referenced_issue(c)) else "NEW"
+            print(f"  {tag:5} {d['status'] or '-':24} {d['milestone'] or '-':22} {','.join(d['assignees']) or '-':40} {d['title'][:70]}")
+        return
+    now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # taken before reading GitHub
+    noted = pull_back(conf, mp, {c["id"]: c for c in cards(conf)}, people, now_iso)
+    json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
+    if noted:
+        print(f"kanban-github: {len(noted)} change(s) from people on GitHub copied to their cards")
+    proj = json.loads(gh("project", "view", num, "--owner", owner, "--format", "json"))
+    fields = json.loads(gh("project", "field-list", num, "--owner", owner, "--format", "json", "--limit", "200"))["fields"]
+    sf = next(f for f in fields if f["name"] == "Status")
+    opts = {o["name"]: o["id"] for o in sf.get("options", [])}
+    wf = next((f for f in fields if f["name"] == "Waiting on"), None)
+    if not wf:
+        gh("project", "field-create", num, "--owner", owner, "--name", "Waiting on", "--data-type", "TEXT")
+        fields = json.loads(gh("project", "field-list", num, "--owner", owner, "--format", "json", "--limit", "200"))["fields"]
+        wf = next(f for f in fields if f["name"] == "Waiting on")
+    ms = {m["title"]: m["number"] for m in json.loads(gh("api", f"repos/{repo}/milestones?state=all&per_page=100"))}
+    for w in conf.get("weeks", []):
+        if w["title"] not in ms:
+            m = json.loads(gh("api", f"repos/{repo}/milestones", "-f", f"title={w['title']}", "-f", f"due_on={w['due']}T23:59:59Z",
+                              "-f", f"description=v1.0 week {w['start']} to {w['due']}"))
+            ms[w["title"]] = m["number"]
+    have = {x["name"] for x in json.loads(gh("label", "list", "-R", repo, "--limit", "200", "--json", "name"))}
+    if conf.get("owner_label") and conf["owner_label"] not in have:
+        gh("label", "create", conf["owner_label"], "-R", repo, "--color", "C5DEF5", "--description", "Owned by people outside GitHub")
+    changed = 0
+    for c in todo:
+        d = desired(c, conf, people)
+        n = mp.get(c["id"]) or referenced_issue(c)
+        created = c["id"] in mp and mp.get(f"created:{c['id']}")
+        if not n:
+            args_ = ["issue", "create", "-R", repo, "--title", d["title"], "--body", d["body"]]
+            for a in d["assignees"]:
+                args_ += ["--assignee", a]
+            for lb in d["labels"]:
+                args_ += ["--label", lb]
+            if d["milestone"]:
+                args_ += ["--milestone", d["milestone"]]
+            url = gh(*args_).strip().splitlines()[-1]
+            n = int(url.rsplit("/", 1)[1])
+            mp[c["id"]], mp[f"created:{c['id']}"], mp[f"init:{c['id']}"] = n, True, True
+            created = True
+            changed += 1
+            print(f"created #{n}: {d['title'][:80]}")
+            time.sleep(2)  # GitHub's content-creation limits
+        else:
+            mp[c["id"]] = n
+            first = not mp.get(f"init:{c['id']}")
+            if first or c["status"] == "done":
+                iss = json.loads(gh("issue", "view", str(n), "-R", repo, "--json", "title,state,assignees,labels,milestone"))
+            edit = []
+            if first:  # owners, labels and week only when the issue is first linked: afterwards people's edits on GitHub win
+                cur = {a["login"] for a in iss["assignees"]}
+                edit += [x for a in d["assignees"] if a not in cur for x in ("--add-assignee", a)]
+                curl = {lb["name"] for lb in iss["labels"]}
+                edit += [x for lb in d["labels"] if lb not in curl for x in ("--add-label", lb)]
+                if d["milestone"] and not iss.get("milestone"):
+                    edit += ["--milestone", d["milestone"]]
+            if edit:
+                gh("issue", "edit", str(n), "-R", repo, *edit)
+                changed += 1
+            mp[f"init:{c['id']}"] = True
+            if c["status"] == "done" and created and iss["state"] == "OPEN":
+                gh("issue", "close", str(n), "-R", repo, "--reason", "completed")
+                changed += 1
+        state = [d["status"], d["waiting"]]
+        if mp.get(f"state:{c['id']}") == state:
+            continue  # nothing changed since the last run: skip the project calls
+        url = f"https://github.com/{repo}/issues/{n}"
+        item = json.loads(gh("project", "item-add", num, "--owner", owner, "--url", url, "--format", "json"))["id"]
+        linked = json.loads(gh("api", "graphql", "-f", "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+                               "{issue(number:$n){closedByPullRequestsReferences(first:1,includeClosedPrs:false){totalCount}}}}",
+                               "-f", f"o={repo.split('/')[0]}", "-f", f"r={repo.split('/')[1]}", "-F", f"n={n}"))
+        has_pr = linked["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["totalCount"] > 0
+        if d["status"] in opts and not has_pr:
+            gh("project", "item-edit", "--id", item, "--project-id", proj["id"], "--field-id", sf["id"],
+               "--single-select-option-id", opts[d["status"]])
+        if d["waiting"]:
+            gh("project", "item-edit", "--id", item, "--project-id", proj["id"], "--field-id", wf["id"], "--text", d["waiting"])
+        else:
+            gh("project", "item-edit", "--id", item, "--project-id", proj["id"], "--field-id", wf["id"], "--clear")
+        mp[f"state:{c['id']}"] = state
+        json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
+    if changed:
+        print(f"kanban-github: {changed} change(s)")
+
+
+def selftest():
+    weeks = [{"title": "Week 1 · 9–15 Nov", "start": "2026-11-09", "due": "2026-11-15"},
+             {"title": "Week 4 · 30 Nov–6 Dec", "start": "2026-11-30", "due": "2026-12-06"},
+             {"title": "Week 6 · 14–20 Dec", "start": "2026-12-14", "due": "2026-12-20"}]
+    assert week_for("C3 · 16–22 Nov: x", weeks) is None
+    assert week_for("C12 · 30 Nov–6 Dec: live position", weeks) == "Week 4 · 30 Nov–6 Dec"
+    assert week_for("B3 · 15 Dec: submit iOS", weeks) == "Week 6 · 14–20 Dec"
+    assert week_for("O4 · by 13 Nov: decisions", weeks) == "Week 1 · 9–15 Nov"
+    people = [{"key": "a", "aliases": ["owner2"], "github": ["gh-a"]}, {"key": "f", "aliases": ["founder1"], "github": []}]
+    assert [p["key"] for p in owners("Human owner owner2; QA x. AC1 founder1 approves", people)] == ["a"]
+    assert sanitize("See t_1234abcd and ~/work/x/docs/a.md in the Kanban card") == "See and in the task task"
+    assert status_for("scheduled", "", "waiting on founder1 for facts", people) == "Awaiting Human Approval"
+    assert status_for("scheduled", "", "waiting on capacity after v1.0", people) == "Paused"
+    names = {"gh-a": "Owner Two"}
+    assert describe_event({"event": "assigned", "actor": {"login": "gh-a"}, "assignee": {"login": "gh-b"}}, names) == "Owner Two assigned gh-b"
+    assert describe_event({"event": "milestoned", "actor": {"login": "x"}, "milestone": {"title": "Week 2"}}, names) == "x set the week to Week 2"
+    mp0 = {}
+    assert pull_back({"repo": "o/r"}, mp0, {}, people, "2026-11-10T00:00:00Z") == [] and mp0["back_since"] == "2026-11-10T00:00:00Z"
+    people[1]["name"] = "Founder One"
+    assert waiting_on("scheduled", "waiting on founder1 for facts", people) == "Founder One"
+    assert waiting_on("running", "waiting on founder1 for facts", people) == ""
+    assert waiting_on("scheduled", "waiting on capacity after v1.0", people) == ""
+    assert status_for("blocked", "needs_input", "", people) == "Needs Clarification" and status_for("running", "", "", people) == "In Progress"
+    conf = {"exclude_assignees": ["default"], "include_title": r"^[A-Z]\d+", "exclude_title": r"^Report"}
+    assert mirrored({"assignee": "dev", "title": "C3 · x"}, conf) and not mirrored({"assignee": "default", "title": "C3"}, conf)
+    assert not mirrored({"assignee": "dev", "title": "Report step"}, conf)
+    assert referenced_issue({"title": "Fix issue #54 now"}) == 54 and referenced_issue({"title": "QA PR #40 x"}) is None
+    assert referenced_issue({"title": "D1 source x", "body": "Implements issue #52 settings"}) == 52
+    assert referenced_issue({"title": "C3 x", "body": "see PR #40 first"}) is None
+    print("kanban-github selftest ok")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
