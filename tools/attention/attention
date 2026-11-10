@@ -280,27 +280,50 @@ def repos():
             yield d, re.sub(r"^(https://github\.com/|git@github\.com:)|\.git$", "", url.strip())
 
 
+CI_FAILED = ("failure", "timed_out", "startup_failure")
+
+
+def ci_new_failures(runs, last, done):
+    """Completed runs not seen before, and which of them failed.
+    Tracks completed run IDs (not only the newest ID), so a slow run that fails after a newer quick run
+    completed is still reported (issue 60ca3e). `done` is None for a repo still on the old watermark
+    state: then only IDs above `last` count as new, once."""
+    new, failed = [], []
+    for r in sorted(runs, key=lambda r: r["databaseId"]):
+        i = r["databaseId"]
+        if r.get("status") != "completed":
+            continue
+        if (i in done) if done is not None else (i <= last):
+            continue
+        new.append(i)
+        if r.get("conclusion") in CI_FAILED:
+            failed.append(r)
+    return new, failed
+
+
 def ci_events(state):
     out, seen = [], state.setdefault("ci_seen", {})
+    done_map = state.setdefault("ci_done", {})
     gh = f"{H}/.local/bin/gh"
     if not os.path.exists(gh):
         return out
     for d, slug in repos():
         rc, head = run(["git", "-C", d, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         branch = head.strip().split("/", 1)[-1] or "main"
-        rc, js = run([gh, "run", "list", "-R", slug, "-b", branch, "-L", "15", "--json",
+        rc, js = run([gh, "run", "list", "-R", slug, "-b", branch, "-L", "50", "--json",
                       "databaseId,conclusion,status,workflowName,url,displayTitle"], cwd=d)
         if rc:
             continue
         runs = json.loads(js or "[]")
-        first = slug not in seen
+        first = slug not in seen and slug not in done_map
         last = seen.get(slug, 0)
-        for r in sorted(runs, key=lambda r: r["databaseId"]):
-            if r["databaseId"] > last and r.get("status") == "completed" and r.get("conclusion") in ("failure", "timed_out", "startup_failure"):
-                if not first:
-                    out.append((f"ci:{r['databaseId']}", f"❌ CI failed on {slug} `{branch}`: {r['workflowName']} ({r['displayTitle'][:60]}). Next: open {r['url']}"))
-        done = [r["databaseId"] for r in runs if r.get("status") == "completed"]
-        seen[slug] = max([last] + done)
+        done = set(done_map[slug]) if slug in done_map else None
+        new, failed = ci_new_failures(runs, last, done)
+        if not first:
+            for r in failed:
+                out.append((f"ci:{r['databaseId']}", f"❌ CI failed on {slug} `{branch}`: {r['workflowName']} ({r['displayTitle'][:60]}). Next: open {r['url']}"))
+        done_map[slug] = sorted((done or set()) | set(new) | {r["databaseId"] for r in runs if r.get("status") == "completed"})[-300:]
+        seen[slug] = max([last] + new)
     return out
 
 
@@ -325,12 +348,42 @@ def pr_approved(slug, num, since, owner):
                   "state,reviewDecision,labels,comments,mergedAt,reviews,headRefOid"], timeout=60)
     if rc:
         return False, "unreadable"
-    d = json.loads(js or "{}")
-    cfg = load("config.json", {})
-    ok, why = pr_verdict(d, since, owner, cfg.get("agent_github_logins", []), cfg.get("owner_gate_labels", ["human-signoff"]))
+    try:
+        d = json.loads(js or "{}")
+        # gh pr view's aggregate approval can survive a push. Fetch every review,
+        # including its commit binding; a failed/incomplete read grants nothing.
+        if d.get("state") == "OPEN":
+            rc, reviews = run([f"{H}/.local/bin/gh", "api", "--paginate", "--slurp",
+                              f"repos/{slug}/pulls/{num}/reviews?per_page=100"], timeout=60)
+            if rc:
+                return False, "reviews unreadable"
+            pages = json.loads(reviews)
+            if not isinstance(pages, list) or not all(isinstance(p, list) for p in pages):
+                return False, "reviews unreadable"
+            d["reviews"] = [{"id": r.get("id"), "author": {"login": (r.get("user") or {}).get("login"),
+                                          "__typename": (r.get("user") or {}).get("type")},
+                             "state": r.get("state"), "submittedAt": r.get("submitted_at"),
+                             "body": r.get("body"), "commit": {"oid": r.get("commit_id")}}
+                            for page in pages for r in page]
+        cfg = load("config.json", {})
+        ok, why = pr_verdict(d, since, owner, cfg.get("agent_github_logins", []), cfg.get("owner_gate_labels", ["human-signoff"]))
+        if ok is True and d.get("state") == "OPEN":
+            rc, current = run([f"{H}/.local/bin/gh", "pr", "view", str(num), "-R", slug,
+                               "--json", "headRefOid,state"], timeout=60)
+            current = json.loads(current or "{}")
+            if rc or current.get("state") != "OPEN" or current.get("headRefOid") != d.get("headRefOid"):
+                return False, "candidate changed during approval read"
+    except (ValueError, TypeError, AttributeError):
+        return False, "approval unreadable"
     # the head makes the reason unique per approved revision, so pr_resume can resume once per revision
     # qa-passed changes the reason too, so a card parked in Scheduled until QA passes wakes once more for it
     qa = " qa-passed" if any((l.get("name") or "").lower() == "qa-passed" for l in d.get("labels") or []) else ""
+    if ok is True and why == "approved in review":
+        # Old false wakes consumed a head/QA-only reason. Evidence-bearing keys
+        # let a later genuine approval wake once without rewriting saved state.
+        ids = sorted(str(r["id"]) for r in d.get("reviews") or [] if r.get("id")
+                     and r.get("state") == "APPROVED" and (r.get("commit") or {}).get("oid") == d.get("headRefOid"))
+        why += " review-event:" + (",".join(ids) or "exact-head-verified")
     return ok, f"{why} at {d['headRefOid'][:7]}{qa}" if ok is True and d.get("headRefOid") else why
 
 
@@ -346,25 +399,43 @@ def pr_verdict(d, since, owner, agents=(), gate_labels=("human-signoff",)):
         # a merge from before the card waited is history the card mentions, not what it waits on
         return (True, "merged") if (d.get("mergedAt") or "") >= after else (None, "merged before the card waited")
     qa_passed = any((l.get("name") or "").lower() == "qa-passed" for l in d.get("labels") or [])
-    if d.get("reviewDecision") == "APPROVED" and (
-            "reviews" not in d or qa_passed
-            or any(r.get("state") == "APPROVED" and (r.get("submittedAt") or "") >= after for r in d["reviews"] or [])):
-        # an approval from before the card waited wakes it only once QA has passed the PR (a dev waiting to merge)
-        return True, "approved in review"
-    if any((l.get("name") or "").lower() in ("approved", "owner-approved") for l in d.get("labels") or []):
-        return True, "labelled approved"
     names = {(l.get("name") or "").lower() for l in d.get("labels") or []}
+    human_gate = bool(names & {g.lower() for g in gate_labels})
+    bots = {a.lower() for a in agents}
+    head = d.get("headRefOid") or ""
+    latest = {}
+    for r in sorted(d.get("reviews") or [], key=lambda r: r.get("submittedAt") or ""):
+        author = r.get("author") or {}
+        who = (author.get("login") or "").lower()
+        if not who or who in bots or who.endswith("[bot]") or author.get("__typename") != "User":
+            continue
+        if r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[who] = r
+    if d.get("reviewDecision") == "APPROVED" and re.fullmatch(r"[0-9a-fA-F]{40}", head) and any(
+            r.get("state") == "APPROVED" and (r.get("commit") or {}).get("oid") == head
+            and (qa_passed or (r.get("submittedAt") or "") >= after) for r in latest.values()):
+        # A repark does not invalidate approval of the SAME head. QA and an
+        # aggregate decision can never bind an older review to a new candidate.
+        return True, "approved in review"
+    if not human_gate and names & {"approved", "owner-approved"}:
+        return True, "labelled approved"
     if qa_passed and not names & {g.lower() for g in gate_labels}:
         # QA's pass label is the merge release for a PR that needs no person's sign-off (no review approval is given there)
         return True, "qa passed"
     after = dt.datetime.fromtimestamp(since, dt.timezone.utc).isoformat() if since else ""
     bots = {a.lower() for a in agents}
-    for c in (d.get("comments") or []) + (d.get("reviews") or []):
+    for c in (d.get("comments") or []) + ([] if human_gate else (d.get("reviews") or [])):
         who = ((c.get("author") or {}).get("login") or "").lower()
         when = c.get("createdAt") or c.get("submittedAt") or ""
         # no github_owner set: any human (not an agent login) may approve
         approver = who == owner.lower() if owner else bool(who) and who not in bots
-        if approver and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
+        approver = approver and who not in bots and not who.endswith("[bot]") and (c.get("author") or {}).get("__typename") != "Bot"
+        # Labels and an unqualified 'approved' cannot attest an exact-head human
+        # gate. Keep ordinary comment feedback, but require the complete SHA
+        # for comment-based sign-off on a human-gated PR.
+        bound = not human_gate or (bool(re.fullmatch(r"[0-9a-fA-F]{40}", head)) and
+                                   re.search(r"(?<![0-9a-fA-F])" + re.escape(head) + r"(?![0-9a-fA-F])", c.get("body") or ""))
+        if approver and bound and when >= after and APPROVE_WORDS.match(c.get("body") or ""):
             return True, f"approved in a comment by {who}"
     for c in d.get("reviews") or []:
         who = ((c.get("author") or {}).get("login") or "").lower()
@@ -522,6 +593,17 @@ def renewal_cmd(args):
 def selftest():
     assert pr_refs("see https://github.com/o/r/pull/7", "waiting on PR #38 (issue #37)", "o/r") == [("o/r", "38"), ("o/r", "7")]
     assert pr_refs("PR #9 in a comment", "", "o/r") == [] and pr_refs("", "PR #38", "") == []
+    # CI (issue 60ca3e): a slow run that fails after a newer quick run completed must still be reported
+    slow = {"databaseId": 10, "status": "in_progress", "conclusion": ""}
+    quick = {"databaseId": 11, "status": "completed", "conclusion": "success"}
+    new, failed = ci_new_failures([slow, quick], 9, {9})
+    assert new == [11] and failed == []
+    new, failed = ci_new_failures([dict(slow, status="completed", conclusion="failure"), quick], 11, {9, 11})
+    assert new == [10] and [r["databaseId"] for r in failed] == [10]
+    assert ci_new_failures([dict(slow, status="completed", conclusion="failure"), quick], 11, {9, 10, 11}) == ([], [])
+    # legacy watermark state (done=None): only IDs above the watermark count, once
+    assert ci_new_failures([dict(slow, status="completed", conclusion="failure"), quick], 11, None) == ([], [])
+    assert ci_new_failures([{"databaseId": 12, "status": "completed", "conclusion": "timed_out"}], 11, None)[0] == [12]
     global D, TODAY
     import tempfile
     D = tempfile.mkdtemp()
@@ -530,11 +612,11 @@ def selftest():
     assert unanswered(["2026-11-01 - abc123: open one", "2026-11-01 — def456 — answered", "2026-10-30 — 0e5e7f / abc123 — pair"], om) == ["2026-11-01 - abc123: open one", "2026-10-30 — 0e5e7f / abc123 — pair"]
     since = dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc).timestamp()
     rv = lambda who, st, when="2026-11-02T10:00:00Z", body="": {"author": {"login": who}, "state": st, "submittedAt": when, "body": body}
-    assert pr_verdict({"reviewDecision": "APPROVED"}, since, "") == (True, "approved in review")
-    old = [{"author": {"login": "reviewer-a"}, "state": "APPROVED", "submittedAt": "2026-11-01T10:00:00Z"}]
+    assert pr_verdict({"reviewDecision": "APPROVED"}, since, "") == (False, "waiting")
+    old = [{"author": {"login": "reviewer-a", "__typename": "User"}, "state": "APPROVED", "submittedAt": "2026-11-01T10:00:00Z", "commit": {"oid": "a" * 40}}]
     assert pr_verdict({"reviewDecision": "APPROVED", "reviews": old}, since, "") == (False, "waiting")
-    assert pr_verdict({"reviewDecision": "APPROVED", "reviews": old, "labels": [{"name": "qa-passed"}]}, since, "")[0] is True
-    assert pr_verdict({"reviewDecision": "APPROVED", "reviews": [dict(old[0], submittedAt="2026-11-03T10:00:00Z")]}, since, "")[0] is True
+    assert pr_verdict({"reviewDecision": "APPROVED", "headRefOid": "a" * 40, "reviews": old, "labels": [{"name": "qa-passed"}]}, since, "")[0] is True
+    assert pr_verdict({"reviewDecision": "APPROVED", "headRefOid": "a" * 40, "reviews": [dict(old[0], submittedAt="2026-11-03T10:00:00Z")]}, since, "")[0] is True
     assert pr_verdict({"state": "MERGED", "mergedAt": "2026-11-01T10:00:00Z"}, since, "") == (None, "merged before the card waited")
     assert pr_verdict({"state": "CLOSED", "mergedAt": None}, since, "") == (None, "closed unmerged")
     assert pr_verdict({"reviewDecision": "", "labels": [{"name": "qa-passed"}]}, since, "") == (True, "qa passed")
