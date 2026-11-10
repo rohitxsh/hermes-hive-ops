@@ -18,7 +18,8 @@ in its comments) maps to it; otherwise one issue is created. The
 mapping lives in ~/agents/kanban-github/map.json; GitHub never sees card ids or VM paths. Status follows the card
 (todo Backlog, ready Ready, running In Progress, review In Review, waiting on a person Awaiting Human Approval, parked
 Paused, blocked Blocked, needs_input Needs Clarification) except while the issue has a linked PR (board-sync owns those).
-A done card closes the issue it created."""
+A done card closes the issue it created only if no other known card on the same issue is unfinished; such linked work
+(even a card the title filter excludes) vetoes both the close and the project Done. This never reopens a closed issue."""
 import collections
 import datetime
 import json
@@ -111,6 +112,16 @@ def referenced_issue(card):
     in its comments (never a PR)."""
     m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or ISSUE_REF.search(card.get("body", "")[:300])
     return int(next(g for g in m.groups() if g)) if m else card.get("comment_issue")
+
+
+def unfinished_issue_work(card, all_cards, mapping):
+    """Other cards on the same issue that are not done: a finished phase must not close a shared issue or mark it Done
+    while later work on it is still live (all cards count, including ones the title filter excludes)."""
+    issue = mapping.get(card["id"]) or referenced_issue(card)
+    if not issue:
+        return []
+    return [o["id"] for o in all_cards if o["id"] != card["id"] and o["status"] not in ("done", "archived")
+            and (mapping.get(o["id"]) or referenced_issue(o)) == issue]
 
 
 def cards(conf):
@@ -221,9 +232,12 @@ def main(args):
     if dry:
         new = [c for c in todo if c["id"] not in mp and not referenced_issue(c)]
         print(f"{len(todo)} cards mirrored: {len(new)} new issues, {len(todo) - len(new)} existing")
+        every = cards(conf)
         for c in todo:
             d = desired(c, conf, people)
-            tag = f"#{mp.get(c['id']) or referenced_issue(c)}" if (c["id"] in mp or referenced_issue(c)) else "NEW"
+            if c["status"] == "done" and unfinished_issue_work(c, every, mp):
+                d["status"] = "Held (unfinished work)"
+            tag =f"#{mp.get(c['id']) or referenced_issue(c)}" if (c["id"] in mp or referenced_issue(c)) else "NEW"
             print(f"  {tag:5} {d['status'] or '-':24} {d['milestone'] or '-':22} {','.join(d['assignees']) or '-':40} {d['title'][:70]}")
         return
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # taken before reading GitHub
@@ -250,7 +264,11 @@ def main(args):
     if conf.get("owner_label") and conf["owner_label"] not in have:
         gh("label", "create", conf["owner_label"], "-R", repo, "--color", "C5DEF5", "--description", "Owned by people outside GitHub")
     changed = 0
+    every = cards(conf)
     for c in todo:
+        # veto both the issue close and project Done (which can auto-close it) while linked work is live
+        if c["status"] == "done" and unfinished_issue_work(c, every, mp):
+            continue
         d = desired(c, conf, people)
         n = mp.get(c["id"]) or referenced_issue(c)
         created = c["id"] in mp and mp.get(f"created:{c['id']}")
@@ -353,6 +371,10 @@ def selftest():
     assert comment_issue(["done on issue #118", "https://github.com/o/r/issues/118 updated", "see issue #57 too"]) == 118
     assert comment_issue(["issue #118", "issue #119"]) is None and comment_issue(["issue #5"]) is None
     assert referenced_issue({"title": "E25-A x", "body": "", "comment_issue": 118}) == 118
+    phase = {"id": "a", "status": "done", "title": "C18 x", "body": ""}
+    later = {"id": "b", "status": "scheduled", "title": "Report on issue #93", "body": ""}
+    assert unfinished_issue_work(phase, [phase, later], {"a": 93}) == ["b"]           # live linked work vetoes closing #93
+    assert unfinished_issue_work(phase, [phase, dict(later, status="done")], {"a": 93}) == []
     print("kanban-github selftest ok")
 
 
