@@ -14,8 +14,8 @@ with the same name replaces the plugin's). Each starts with front matter naming 
 SOUL.md (between BEGIN and END), replacing the block when the rules change and removing it when none match.
 `hermes ops-rules check` lists SOULs that are out of date (exit 1); `show <profile>` prints a profile's block.
 Plugin system prompt sections can't carry these (Hermes caps them at 4,000 characters each, 8,000 in all), so the
-rules live in SOUL.md like the rest of each profile's instructions. In the gateway the plugin only checks, once at
-start, and logs a warning when a SOUL is out of date.
+rules live in SOUL.md like the rest of each profile's instructions. In the gateway the plugin checks once at start
+and applies the rules to any out-of-date SOUL (a warning only if that apply fails).
 Selftest:  python3 __init__.py --selftest
 """
 from __future__ import annotations
@@ -163,11 +163,18 @@ def _refresh_sessions(profiles):
 
 
 def _check_once():
+    """At gateway start, bring stale SOULs up to date: the rule files on disk are the intended state, and a warning here
+    only ever meant "a rule rollout and this start overlapped" (one warning per profile on every rollout)."""
     try:
         stale = run("check")
-        if stale:
-            log.warning("ops-rules: %d SOUL(s) out of date with the shared rules (%s); run `hermes ops-rules apply`",
-                        len(stale), ", ".join(stale))
+        if not stale:
+            return
+        try:
+            done = run("apply")
+            log.info("ops-rules: applied the shared rules to %d SOUL(s) at start (%s)", len(done), ", ".join(done))
+        except Exception as e:
+            log.warning("ops-rules: %d SOUL(s) out of date with the shared rules (%s) and apply failed (%s); "
+                        "run `hermes ops-rules apply`", len(stale), ", ".join(stale), e)
     except Exception as e:  # never break the gateway over a rules check
         log.warning("ops-rules: check failed: %s", e)
 

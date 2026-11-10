@@ -13,11 +13,13 @@ Config ~/agents/kanban-github/config.json:
   include_title, exclude_title    regexes on card titles; exclude_assignees: profiles never mirrored (e.g. the admin)
   weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
-A card that names an existing issue ("issue #N" or "#N" in its title) maps to it; otherwise one issue is created. The
+A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
+in its comments) maps to it; otherwise one issue is created. The
 mapping lives in ~/agents/kanban-github/map.json; GitHub never sees card ids or VM paths. Status follows the card
 (todo Backlog, ready Ready, running In Progress, review In Review, waiting on a person Awaiting Human Approval, parked
 Paused, blocked Blocked, needs_input Needs Clarification) except while the issue has a linked PR (board-sync owns those).
 A done card closes the issue it created."""
+import collections
 import datetime
 import json
 import os
@@ -93,11 +95,22 @@ def mirrored(card, conf):
     return bool(re.search(conf.get("include_title", "."), card["title"]))
 
 
+ISSUE_REF = re.compile(r"\bissues? ?#(\d{1,4})\b|/issues/(\d{1,4})\b")
+
+
+def comment_issue(comments):
+    """The issue a card's own agents keep citing in comments ("issue #N" / "issues/N", at least twice), else None.
+    Agents often name the issue they work on only in comments; without this the sync created duplicates."""
+    hits = collections.Counter(int(next(g for g in m.groups() if g)) for body in comments for m in ISSUE_REF.finditer(body or ""))
+    top = hits.most_common(2)
+    return top[0][0] if top and top[0][1] >= 2 and (len(top) == 1 or top[0][1] > top[1][1]) else None
+
+
 def referenced_issue(card):
-    """An existing issue the card names in its title, or as "issue #N" / "issues/N" early in its body (never a PR)."""
-    m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or \
-        re.search(r"\bissues? ?#(\d{1,4})\b|/issues/(\d{1,4})\b", card.get("body", "")[:300])
-    return int(next(g for g in m.groups() if g)) if m else None
+    """An existing issue the card names in its title, or as "issue #N" / "issues/N" early in its body, or keeps citing
+    in its comments (never a PR)."""
+    m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or ISSUE_REF.search(card.get("body", "")[:300])
+    return int(next(g for g in m.groups() if g)) if m else card.get("comment_issue")
 
 
 def cards(conf):
@@ -111,8 +124,9 @@ def cards(conf):
             reason = (json.loads(reason[0] or "{}") or {}).get("reason", "") if reason else ""
         except ValueError:
             reason = ""
+        notes = [b for (b,) in c.execute("select body from task_comments where task_id=? and author != 'github'", (tid,))]
         out.append({"id": tid, "status": status, "assignee": who or "", "title": title or "", "body": body or "",
-                    "kind": kind, "reason": reason})
+                    "kind": kind, "reason": reason, "comment_issue": comment_issue(notes)})
     return out
 
 
@@ -336,6 +350,9 @@ def selftest():
     assert referenced_issue({"title": "Fix issue #54 now"}) == 54 and referenced_issue({"title": "QA PR #40 x"}) is None
     assert referenced_issue({"title": "D1 source x", "body": "Implements issue #52 settings"}) == 52
     assert referenced_issue({"title": "C3 x", "body": "see PR #40 first"}) is None
+    assert comment_issue(["done on issue #118", "https://github.com/o/r/issues/118 updated", "see issue #57 too"]) == 118
+    assert comment_issue(["issue #118", "issue #119"]) is None and comment_issue(["issue #5"]) is None
+    assert referenced_issue({"title": "E25-A x", "body": "", "comment_issue": 118}) == 118
     print("kanban-github selftest ok")
 
 

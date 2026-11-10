@@ -292,6 +292,14 @@ def review_ok(r):
                                       and SHA40.fullmatch(str((r.get("commit") or {}).get("oid"))) is not None)
 
 
+def held_approval(p):
+    """A PR someone already put in Awaiting Human Approval stays there while its "QA Candidate SHA" is the live head.
+    Without this the sync demoted every hand-placed approval to QA Review when no review certificate existed. A new push
+    changes the head and voids the hold; promotion into the lane still needs a certificate."""
+    return (p.get("status") == LANES["approval"] and SHA40.fullmatch(str(p.get("head"))) is not None
+            and p.get("qa_sha") == p.get("head"))
+
+
 def pr_lane(p, accept):
     if p["merged"]:
         return LANES["done"]
@@ -300,7 +308,7 @@ def pr_lane(p, accept):
     labels = set(p["labels"])
     if "changes-requested" in labels:
         return LANES["in_progress"]
-    if {"qa-passed", "human-signoff"} <= labels and accept(p):
+    if {"qa-passed", "human-signoff"} <= labels and (held_approval(p) or accept(p)):
         return LANES["approval"]
     if labels & {"qa", "qa-passed", "human-signoff"}:
         return LANES["qa_review"]
@@ -324,6 +332,12 @@ def issue_lane(it, prs, repo, accept):
         return None, deps, f"reconciliation: {it['what']} is closed but linked PR(s) still open; no completion"
     if open_:
         target = min((pr_lane(p, accept) for p in open_), key=rank().get)
+        if target == LANES["approval"] and not all(accept(p) for p in open_):
+            # some PR is only held there (hand-placed, no certificate): the issue may stay, never be promoted
+            heads = {p["head"] for p in open_}
+            if it["status"] == LANES["approval"] and len(heads) == 1 and it["qa_sha"] in heads:
+                return target, deps, None
+            return LANES["qa_review"], deps, f"{it['what']}: linked PR approval is held, not certified; held at qa_review"
         if target == LANES["approval"]:
             ev = {accept(p) for p in open_}
             if len(ev) != 1:
@@ -449,6 +463,17 @@ def selftest():
     assert got == {"p4": "ARCHIVE", "p7": "In Progress", "p8": "In Progress", "p9": "In Progress",
                    "p10": "Awaiting Human Approval"}, got
     assert sum("reconciliation" in d for d in diags) == 2, diags
+    # hand-placed approval: held while the QA candidate is the live head, demoted after a new push
+    appr = "Awaiting Human Approval"
+    held, pushed = p(12, ok_, status=appr, qa_sha="a" * 40), p(13, ok_, status=appr, qa_sha="c" * 40)
+    moves, _ = plan([held, pushed], "o/r", lambda pr: None)
+    assert {m["id"]: m["target"] for m in moves} == {"p13": "QA Review"}, moves
+    assert pr_lane(dict(held, status="QA Review"), lambda _: None) == "QA Review"  # never promotes without a certificate
+    iss = lambda **kw: dict({"id": "i1", "kind": "Issue", "archived": False, "repo": "o/r", "number": 1, "state": "OPEN",
+                             "linked": [("o/r", 12)], "closes": [], "qa_sha": "a" * 40, "qa_ev": None,
+                             "what": "issue o/r#1"}, **kw)
+    assert issue_lane(iss(status=appr), {("o/r", 12): held}, "o/r", lambda _: None)[0] == appr        # stays with its PR
+    assert issue_lane(iss(status="QA Review"), {("o/r", 12): held}, "o/r", lambda _: None)[0] == "QA Review"  # no promotion
     assert pr_lane(p(11, draft=True, status="In Review"), lambda _: None) == "In Progress"
 
     # QA certificate: validate() against a fake review collection
