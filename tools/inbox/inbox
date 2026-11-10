@@ -91,8 +91,8 @@ def items_from(cards, prs, people, default):
             hit = named(reason)
         link = re.search(r"https://(?:discord\.com/channels/\S+|github\.com/\S+/(?:pull|issues)/\d+)", reason)
         thread = re.search(r"\b(1[0-9]{17,19})\b", reason)
-        item = {"id": c["id"], "title": c.get("title") or "", "summary": first_sentence(reason), "hours": c.get("waiting_hours"),
-                "link": link.group(0).rstrip(").,") if link else None, "thread": thread.group(1) if thread else None,
+        item = {"id": c["id"], "title": c.get("title") or "", "summary": the_ask(reason), "hours": c.get("waiting_hours"),
+                "link": link.group(0).rstrip(").,;") if link else None, "thread": thread.group(1) if thread else None,
                 "owner_missing": not hit}
         for k in hit or [default]:
             out[k].append(item)
@@ -104,6 +104,18 @@ def items_from(cards, prs, people, default):
             out[k].append({"id": f"pr{pr['number']}", "title": f"PR #{pr['number']}: {pr['title']}", "summary": pr_state(pr),
                            "hours": None, "link": pr["url"], "thread": None, "owner_missing": False})
     return out
+
+
+def the_ask(reason):
+    """The "waiting on <who> for <what>" sentence, which says what the person must do; agents often put a
+    "Partly done — ..." status first. Falls back to the first sentence."""
+    text = re.sub(r"\s+", " ", reason or "").strip()
+    m = re.search(r"waiting (?:on|for) .*?(?:[.;](?=\s|$)|$)", text, re.I)
+    if not m:
+        return first_sentence(text)
+    ask = m.group(0)
+    ask = ask[0].upper() + ask[1:]
+    return ask if len(ask) <= 220 else ask[:217].rsplit(" ", 1)[0] + "…"
 
 
 def first_sentence(text):
@@ -147,9 +159,30 @@ def chunks(text, n=1900):
     return [c for c in out + [cur] if c.strip()]
 
 
+def wait_from_comments(db_path, cards):
+    """A card created blocked keeps a placeholder reason ("initial_status") while its worker names the wait in a
+    comment: use the newest comment that says "waiting on/for <who>" as the reason for such cards."""
+    import sqlite3
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        for c in cards:
+            if waiting_scope(c.get("reason")) is not None or c.get("status") == "scheduled":
+                continue
+            for (body,) in db.execute("select body from task_comments where task_id=? order by created_at desc, id desc limit 20",
+                                      (c["id"],)):
+                m = re.search(r"waiting (?:on|for) .*?(?:[.;](?=\s|$)|$)", re.sub(r"\s+", " ", body or ""), re.I)
+                if m and waiting_scope(m.group(0)):
+                    c["reason"] = m.group(0)
+                    break
+    finally:
+        db.close()
+    return cards
+
+
 def gather(conf):
     ph = load_pending_human()
-    cards = ph.waiting_cards(f"{H}/.hermes/kanban.db", time.time())
+    db_path = f"{H}/.hermes/kanban.db"
+    cards = wait_from_comments(db_path, ph.waiting_cards(db_path, time.time()))
     repo = ph.REPOS.get(conf.get("profile"), (None, None))[0]
     prs = None
     if repo:
@@ -241,11 +274,28 @@ def selftest():
     assert out["r"][0]["owner_missing"] and not out["r"][1]["owner_missing"]
     assert waiting_scope("waiting on capacity after v1.0 (x, Owner)") == "capacity after v1.0 "
     assert out["a"][0]["link"] == "https://discord.com/channels/9/1000000000000000040"
+    assert items_from([{"id": "t_8", "title": "q", "reason": "waiting on devops1 for x (https://discord.com/channels/9/1000000000000000060);"}], [], people, "r")["a"][0]["link"] == "https://discord.com/channels/9/1000000000000000060"
     txt = render(people[0], out["r"], "9", True)
     assert txt.startswith("<@1> **Waiting on you** (2)") and "**Needs an owner:**" in txt and "discord.com/channels/9/1000000000000000050" in txt
     assert render(people[0], [], "9", False) == "" and "Nothing is waiting" in render(people[0], [], "9", True)
     assert all(len(c) <= 1900 for c in chunks("x" * 100 + "\n" + ("y" * 80 + "\n") * 60))
     assert first_sentence("Blocked — needs the four answers: provider, account. More text here.") == "Blocked — needs the four answers:"
+    assert the_ask("Partly done — brief v0.2 published. waiting on Owner for the C12 verdict by13Nov and UX0.1 screens. "
+                   "More status.") == "Waiting on Owner for the C12 verdict by13Nov and UX0.1 screens."
+    assert the_ask("Blocked — needs the four answers: provider, account.") == "Blocked — needs the four answers:"
+    assert the_ask("waiting on Owner for " + "x " * 200).endswith("…") and len(the_ask("waiting on Owner for " + "x " * 200)) <= 220
+    assert out["a"][2]["summary"] == "Waiting on devops1 for the provider."
+    import sqlite3, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        dbp = f"{d}/k.db"
+        db = sqlite3.connect(dbp)
+        db.execute("create table task_comments (id integer primary key, task_id text, body text, created_at integer)")
+        db.executemany("insert into task_comments (task_id, body, created_at) values (?,?,?)",
+                       [("t_9", "Held. waiting on devops1 for the token. More.", 1), ("t_9", "status only, no wait", 2)])
+        db.commit(); db.close()
+        got = wait_from_comments(dbp, [{"id": "t_9", "status": "blocked", "reason": "initial_status"},
+                                       {"id": "t_10", "status": "blocked", "reason": "waiting on owner1 for x"}])
+        assert got[0]["reason"] == "waiting on devops1 for the token." and got[1]["reason"] == "waiting on owner1 for x", got
     print("inbox selftest ok")
 
 
