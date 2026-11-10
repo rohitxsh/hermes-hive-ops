@@ -14,7 +14,7 @@ A card is listed when it is: blocked for >30 min on anything but another card (n
 wait on a person); held in triage after a block loop (kind other than needs_input); ready or in review but not picked up for >45 min;
 running with no heartbeat for >30 min; scheduled for >24 h; todo for >12 h although every parent is done; or flagged by
 `hermes kanban diagnostics` at error level (a repeated_crashes flag is dropped once the card's newest run parked it
-cleanly); and, once a day, cards that have waited on a person (needs_input) for over
+cleanly: scheduled, a dependency wait or a capability stop, with an exit-0 worker); and, once a day, cards that have waited on a person (needs_input) for over
 a day, so the agent re-checks whether the question was answered or became unnecessary. An unassigned card shows who
 created it. Whether a listed card really waits on a person is the agent's call.
 """
@@ -79,30 +79,74 @@ def candidates(db, now, diags=()):
     return sorted(out)
 
 
-def clean_park(db, tid):
-    """True when the card's newest run parked it cleanly (scheduled, no error, its worker exited 0 after the park).
-    Hermes's repeated_crashes counts older crashes even after such a run, so that diagnostic is stale then.
-    Missing or ambiguous proof keeps the diagnostic."""
+def confirmed_clean_schedule(db, tid):
+    """Only clear a stale crash signal with durable same-run clean parking proof.
+
+    Scheduled parking, native dependency_wait (TODO, or READY after parent
+    completion), and an unclaimed capability block require a terminal error-free
+    run and its later integer-zero worker_result. Upstream repeated_crashes scans
+    across these outcomes. Capability holds remain unchanged and age-visible.
+    Do not change upstream code/history or infer acceptance, capacity release or
+    permission to resume. Missing/ambiguous proof keeps the signal visible.
+    """
+    c = None
     try:
         c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
-        try:
-            row = c.execute("""select r.id, r.ended_at from task_runs r join tasks t on t.id = r.task_id
-                where t.id = ? and t.status = 'scheduled' and r.status = 'scheduled' and r.outcome = 'scheduled'
-                  and r.ended_at is not null and r.error is null and r.id = (select r2.id from task_runs r2
-                  where r2.task_id = t.id order by r2.started_at desc, r2.id desc limit 1)""", (tid,)).fetchone()
-            if not row:
+        c.execute("PRAGMA query_only=ON")
+        c.execute("BEGIN")
+        row = c.execute("""select r.id, r.ended_at, t.status, r.status, r.outcome
+            from task_runs r join tasks t on t.id=r.task_id
+            where t.id=? and r.id=(select r2.id from task_runs r2
+                where r2.task_id=t.id order by r2.started_at desc,r2.id desc limit 1)
+              and r.ended_at is not null and r.error is null""", (tid,)).fetchone()
+        if not row:
+            return False
+        rid, ended, task_status, run_status, outcome = row
+        if task_status == run_status == outcome == 'scheduled':
+            event_kind = 'scheduled'
+        elif task_status in ('todo', 'ready') and run_status == outcome == 'blocked':
+            # Native dependency_wait parks as TODO/blocked; parent completion can
+            # promote it to READY. Neither transition is a worker crash.
+            if not c.execute("""select 1 from tasks t where t.id=?
+                and t.block_kind='dependency' and t.current_run_id is null
+                and exists(select 1 from task_links l where l.child_id=t.id)""", (tid,)).fetchone():
                 return False
-            ev = lambda kind: c.execute("""select created_at, payload from task_events where task_id = ? and run_id = ?
-                and kind = ? order by created_at desc, id desc limit 1""", (tid, row[0], kind)).fetchone()
-            parked, result = ev("scheduled"), ev("worker_result")
-            if not parked or not result or not parked[0] <= row[1] <= result[0]:
+            event_kind = 'dependency_wait'
+        elif task_status == run_status == outcome == 'blocked':
+            # A clean capability stop is not a crash and grants no release authority.
+            if not c.execute("""select 1 from tasks where id=? and block_kind='capability'
+                and current_run_id is null and claim_lock is null and worker_pid is null""", (tid,)).fetchone():
                 return False
-            code = json.loads(result[1]).get("exit_code")
-            return type(code) is int and code == 0
-        finally:
-            c.close()
-    except (sqlite3.Error, OSError, ValueError, TypeError, AttributeError):
+            latest_block = c.execute("""select run_id from task_events where task_id=?
+                and kind='blocked' order by created_at desc,id desc limit 1""", (tid,)).fetchone()
+            if not latest_block or latest_block[0] != rid:
+                return False
+            event_kind = 'blocked'
+        else:
+            return False
+        parked = c.execute("""select created_at,payload from task_events where task_id=? and run_id=?
+            and kind=? order by created_at desc,id desc limit 1""", (tid, rid, event_kind)).fetchone()
+        if event_kind == 'blocked':
+            data = json.loads(parked[1]) if parked else None
+            if (not isinstance(data, dict) or data.get('kind') != 'capability'
+                    or data.get('source_status') not in ('ready', 'review')):
+                return False
+        if event_kind == 'dependency_wait':
+            data = json.loads(parked[1]) if parked else None
+            if (not isinstance(data, dict) or data.get('kind') != 'dependency'
+                    or data.get('source_status') not in ('ready', 'review')):
+                return False
+        result = c.execute("""select created_at,payload from task_events where task_id=? and run_id=?
+            and kind='worker_result' order by created_at desc,id desc limit 1""", (tid, rid)).fetchone()
+        if not parked or not result or not parked[0] <= ended <= result[0]:
+            return False
+        payload = json.loads(result[1])
+        return isinstance(payload, dict) and type(payload.get('exit_code')) is int and payload['exit_code'] == 0
+    except (sqlite3.Error, OSError, ValueError, TypeError):
         return False
+    finally:
+        if c is not None:
+            c.close()
 
 
 def diagnostics():
@@ -111,11 +155,13 @@ def diagnostics():
                            capture_output=True, text=True, timeout=120)
         out = {}
         for d in json.loads(r.stdout or "[]"):
+            tid = d["task_id"]
             kinds = {x["kind"] for x in d.get("diagnostics", [])}
-            if "repeated_crashes" in kinds and clean_park(DB, d["task_id"]):
-                kinds.discard("repeated_crashes")
-            if kinds:
-                out[d["task_id"]] = ",".join(sorted(kinds))
+            if 'repeated_crashes' in kinds and confirmed_clean_schedule(DB, tid):
+                kinds.remove('repeated_crashes')
+                if not kinds:
+                    continue
+            out[tid] = ','.join(sorted(kinds))
         return out
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         return {}
@@ -194,7 +240,8 @@ def selftest():
             insert into task_events (task_id, kind, created_at, payload, run_id) values ('s', 'scheduled', 39, '{}', 2),
               ('s', 'worker_result', 41, '{"exit_code": 0}', 2), ('t', 'scheduled', 39, '{}', 3), ('t', 'worker_result', 41, '{"exit_code": 1}', 3);""")
         c.commit(); c.close()
-        assert clean_park(db, "s") and not clean_park(db, "t") and not clean_park(db, "a") and not clean_park(f"{d}/none.db", "s")
+        assert confirmed_clean_schedule(db, "s") and not confirmed_clean_schedule(db, "t") and not confirmed_clean_schedule(db, "a") \
+            and not confirmed_clean_schedule(f"{d}/none.db", "s")
     assert after_release("review", "qa", "dev") == [["reopen-review"], ["assign", "dev"]]
     assert after_release("ready", "qa", "dev") == [["assign", "dev"]]
     assert after_release("ready", "dev", "dev") == [] and after_release("review", "qa", None) == []
