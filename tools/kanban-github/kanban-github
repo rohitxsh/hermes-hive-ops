@@ -11,6 +11,8 @@ Config ~/agents/kanban-github/config.json:
   people_from                     a config with "people" (aliases + github logins), e.g. ~/agents/inbox/config.json
   role_github, role_labels        per Kanban assignee profile: fallback GitHub assignees, labels
   include_title, exclude_title    regexes on card titles; exclude_assignees: profiles never mirrored (e.g. the admin)
+  private_terms                   optional regex of deployment-specific words (profile names, channels); a card
+                                  title or summary matching it is not copied to the public issue
   weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
 A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
@@ -43,6 +45,35 @@ def sanitize(text):
     text = re.sub(r"\b(?:Kanban|card|run ?\d+|handoff ?\d+|comment ?\d+)\b", lambda m: "task" if m.group(0) in ("Kanban", "card") else "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
+
+
+PUBLIC_INTERNAL = re.compile(
+    r"\bt_[A-Za-z0-9_]+\b|(?:~|/home/[\w.-]+)/|"
+    r"\b(?:kanban|cards?|boards?|handoff\w*|parent|children|child|successors?|predecessors?|"
+    r"PM|queue\w*|dispatch\w*|workers?|workspace\w*|routing|triage|lanes?|"
+    r"agent\w*|reassign\w*|reopen.review|final.PM|run\s*\d+|comment\s*\d+|AC\s*\d+)\b|"
+    r"#(?:assistant|pm|design|architect|devops|dev|qa|growth|ops)\b|<[@#]",
+    re.I,
+)
+
+
+# Deployment-specific words that must never reach a public issue (config "private_terms", a regex such as
+# your agent profile names); set in main().
+PRIVATE_TERMS = None
+FALLBACK_TITLE = "Engineering work"  # config "fallback_title": issue title when the card title is not public-safe
+
+
+def public_text(text):
+    """Fail closed; never disguise private instructions by deleting identifiers.
+
+    This is a conservative summary projection, not a sanitizer for full work
+    instructions. The caller must supply only a title or introductory paragraph.
+    Full requirements/evidence stay in their original source and reviewed comments.
+    """
+    text = (text or "").strip()
+    if not text or text.startswith("#") or PUBLIC_INTERNAL.search(text) or (PRIVATE_TERMS and PRIVATE_TERMS.search(text)):
+        return ""
+    return text
 
 
 def week_for(text, weeks, year=2026):
@@ -154,9 +185,14 @@ def desired(card, conf, people):
     labels = list(conf.get("role_labels", {}).get(card["assignee"], []))
     if conf.get("owner_label") and any(not p.get("github") for p in who):
         labels.append(conf["owner_label"])
-    summary = sanitize(card["body"])[:1800]
-    body = (f"{summary}\n\n---\n_Status, owners and target week on this issue follow the team's task tracker automatically._")
-    return {"title": sanitize(card["title"])[:240], "body": body, "assignees": logins, "labels": sorted(set(labels)),
+    # Only the first introductory sentence is a public-summary candidate.
+    # Do not copy detailed work instructions, even when written on one line.
+    lead = (card["body"].strip().splitlines() or [""])[0]
+    summary = public_text(re.split(r"(?<=[.!?])\s+", lead, maxsplit=1)[0])[:1800]
+    body = (f"{summary}\n\n---\n"
+            "Use this issue for requirements, deliverables and review evidence. "
+            "Creating this issue does not grant implementation, merge or release approval.").strip()
+    return {"title": (public_text(card["title"]) or FALLBACK_TITLE)[:240], "body": body, "assignees": logins, "labels": sorted(set(labels)),
             "milestone": week_for(card["title"] + " " + card["body"][:400], conf.get("weeks", [])),
             "status": "Done" if card["status"] == "done" else status_for(card["status"], card["kind"], card["reason"], people),
             "waiting": waiting_on(card["status"], card["reason"], people)}
@@ -217,6 +253,9 @@ def main(args):
     if args[:1] == ["--selftest"]:
         return selftest()
     conf = json.load(open(f"{D}/config.json"))
+    global PRIVATE_TERMS, FALLBACK_TITLE
+    FALLBACK_TITLE = conf.get("fallback_title") or FALLBACK_TITLE
+    PRIVATE_TERMS = re.compile(conf["private_terms"], re.I) if conf.get("private_terms") else None
     if args[:1] == ["sync"]:  # one sync at a time: two would race on map.json and could create duplicate issues
         import fcntl
         lock = open(f"{D}/.lock", "w")
