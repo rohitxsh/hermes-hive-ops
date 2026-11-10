@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+"""day-summary (2026-11-10): the facts for an end-of-day update, no model calls. Prints, since local midnight (or --since):
+  - PRs merged (number, title, who merged) and issues closed (number, title, who closed, completed or not planned)
+    in one GitHub repo, from a single GraphQL search through the gh wrapper;
+  - Kanban cards completed, per assignee profile;
+  - this machine's admin-log entries for the day (setup changes on external platforms, rules, tools).
+The agent writing the update turns these into plain sentences; it must not invent anything that isn't listed.
+
+  day-summary --repo ORG/REPO [--since YYYY-MM-DD] [--admin-log ~/agents/ADMIN-CHANGES.md] [--agent-logins a,b]
+  day-summary --selftest"""
+import argparse
+import datetime
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+
+H = os.path.expanduser("~")
+GH = f"{H}/.local/bin/gh"
+Q = ("query($q:String!){search(query:$q,type:ISSUE,first:100){issueCount nodes{"
+     "... on Issue{__typename number title stateReason timelineItems(itemTypes:CLOSED_EVENT,last:1){nodes{... on ClosedEvent{actor{login}}}}}"
+     "... on PullRequest{__typename number title merged mergedBy{login}}}}}")
+
+
+def who(login, agents):
+    return "agents" if not login or login in agents else login
+
+
+def github(repo, since, agents):
+    r = subprocess.run([GH, "api", "graphql", "-f", f"query={Q}", "-f", f"q=repo:{repo} is:closed closed:>={since}"],
+                       capture_output=True, text=True, timeout=90)
+    if r.returncode:
+        return [f"GitHub: unavailable ({(r.stderr or r.stdout).strip()[:120]})"]
+    nodes = json.loads(r.stdout)["data"]["search"]["nodes"]
+    merged = [n for n in nodes if n.get("__typename") == "PullRequest" and n.get("merged")]
+    closed = [n for n in nodes if n.get("__typename") == "Issue"]
+    out = [f"PRs merged today: {len(merged)}"]
+    out += [f"- PR #{n['number']} {n['title'][:90]} (merged by {who((n.get('mergedBy') or {}).get('login'), agents)})"
+            for n in merged]
+    out.append(f"Issues closed today: {len(closed)}")
+    for n in closed:
+        ev = (n.get("timelineItems") or {}).get("nodes") or [{}]
+        by = who(((ev[-1] or {}).get("actor") or {}).get("login"), agents)
+        how = "not planned" if n.get("stateReason") == "NOT_PLANNED" else "completed"
+        out.append(f"- #{n['number']} {n['title'][:90]} (closed by {by}, {how})")
+    return out
+
+
+def kanban(since_ts):
+    db = f"{H}/.hermes/kanban.db"
+    if not os.path.exists(db):
+        return []
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    rows = c.execute("select t.assignee, count(*) from task_events e join tasks t on t.id = e.task_id "
+                     "where e.kind = 'completed' and e.created_at >= ? group by t.assignee order by 2 desc", (since_ts,)).fetchall()
+    total = sum(n for _, n in rows)
+    return [f"Kanban cards completed today: {total}" + (" (" + ", ".join(f"{a or 'unassigned'} {n}" for a, n in rows) + ")"
+                                                       if rows else "")]
+
+
+def admin_entries(text, day):
+    """Admin-log bullets dated `day` ("- YYYY-MM-DD ..."), one line each, first 260 characters."""
+    out = []
+    for block in re.split(r"\n(?=- )", text):
+        if block.startswith(f"- {day}"):
+            out.append(re.sub(r"\s+", " ", block[2 + len(day):].strip(" :"))[:260])
+    return out
+
+
+def main(argv):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo")
+    ap.add_argument("--since")
+    ap.add_argument("--admin-log", default=f"{H}/agents/ADMIN-CHANGES.md")
+    ap.add_argument("--agent-logins", default="")
+    ap.add_argument("--selftest", action="store_true")
+    a = ap.parse_args(argv)
+    if a.selftest:
+        return selftest()
+    day = a.since or datetime.date.today().isoformat()
+    since_ts = datetime.datetime.fromisoformat(day).timestamp()
+    agents = {x for x in a.agent_logins.split(",") if x}
+    lines = [f"Facts since {day} 00:00 (local)"]
+    if a.repo:
+        lines += github(a.repo, day, agents)
+    lines += kanban(since_ts)
+    if os.path.exists(a.admin_log):
+        ent = admin_entries(open(a.admin_log, encoding="utf-8", errors="replace").read(), day)
+        lines.append(f"Setup and admin changes today: {len(ent)}")
+        lines += [f"- {e}" for e in ent]
+    print("\n".join(lines))
+    return 0
+
+
+def selftest():
+    log = ("- 2026-11-09 old entry\n- 2026-11-10 Claude (Rohit: x): Cloudflare DNSSEC on\n  continued line\n"
+           "- 2026-11-10 Claude: Supabase OTP 6 digits\n- 2026-11-11 tomorrow\n")
+    got = admin_entries(log, "2026-11-10")
+    assert got == ["Claude (Rohit: x): Cloudflare DNSSEC on continued line", "Claude: Supabase OTP 6 digits"], got
+    assert who("team-bot", {"team-bot"}) == "agents" and who("person-gh", {"team-bot"}) == "person-gh" and who(None, set()) == "agents"
+    print("day-summary selftest ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
