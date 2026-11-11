@@ -25,6 +25,10 @@ for d in "$H" "$H"/profiles/*; do
   [ -f "$d/config.yaml" ] || continue
   { [ -f "$d/plugins/outbound-guard/__init__.py" ] && grep -q "outbound-guard" "$d/config.yaml"; } || p+=("outbound-guard missing or not enabled in $d")
   { [ -f "$d/plugins/ops-core/__init__.py" ] && grep -q "ops-core" "$d/config.yaml"; } || p+=("ops-core missing or not enabled in $d")
+  # Hermes keeps only the head and tail of a context file over its limit (6% of the model's window unless
+  # context_file_max_chars is set): a SOUL that outgrows it silently loses the middle of its rules.
+  lim=$(awk -F': *' '/^context_file_max_chars:/ {print $2+0}' "$d/config.yaml"); sz=$(wc -c < "$d/SOUL.md" 2>/dev/null || echo 0)
+  [ "$sz" -le "${lim:-65280}" ] || p+=("SOUL.md in $d is $sz chars, over its ${lim:-65280}-char limit: runs on smaller-window models drop the middle of the rules (set context_file_max_chars in its config.yaml, or trim)")
 done
 # shared SOUL rules (ops-core): a SOUL rebuilt or edited by hand drops or changes the managed block
 out=$("$HOME/.local/bin/hermes" ops-rules check 2>/dev/null | tail -1)
