@@ -43,7 +43,7 @@ step_tools() {  # tools into ~/agents/src, commands linked into ~/.local/bin, sc
   link kanban-doctor/kanban-doctor kanban-doctor; link pending-human/pending-human pending-human
   link restart-idle/hermes-restart-idle hermes-restart-idle; link artifacts/publish-artifact publish-artifact
   link issues/issue-digest.py issues; link token-stats/token-stats token-stats; link token-stats/tool-output-stats tool-output-stats
-  link outbox/outbox outbox; link config-track/config-track config-track
+  link outbox/outbox outbox; link config-track/config-track config-track; link local-supabase/local-supabase local-supabase
   for s in memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py kanban-feed/kanban-feed:kanban-feed.py \
            issues/issue-digest.py:issue-digest.py issues/issue-pending.sh:issue-pending.sh approval-notify/approval-notify.py:approval-notify.py \
            gateway-heal/gateway-heal.py:gateway-heal.py quota/quota-guard.py:quota-guard.py maintenance/hermes-backup.sh:hermes-backup.sh \

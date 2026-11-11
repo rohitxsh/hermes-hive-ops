@@ -1,0 +1,49 @@
+#!/bin/bash
+# local-supabase (2026-11-12): one trimmed local Supabase stack per VM, for testing real Auth, RLS and sign-in codes
+# without any email account. Synthetic data only; it never talks to a hosted project.
+#   local-supabase start <repo-dir>   Postgres, Auth, PostgREST, Kong and the Mailpit test mailbox. Refuses when a stack is
+#                                     already running (one per VM) or when RAM is low (LOCAL_SUPABASE_MIN_MB, default 3000)
+#   local-supabase status <repo-dir>  API URL, publishable/anon key, mailbox URL (JSON)
+#   local-supabase code <email>       newest 6-digit code the local stack emailed to <email> (read from the test mailbox)
+#   local-supabase stop <repo-dir>    stop it and drop its data; always run this when the test run ends
+#   local-supabase --selftest
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+EXCLUDE=studio,realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta
+MIN_MB=${LOCAL_SUPABASE_MIN_MB:-3000}
+MAILPIT=${LOCAL_SUPABASE_MAILPIT:-http://127.0.0.1:54324}
+cmd=${1:-}; arg=${2:-}
+running() { docker ps --format '{{.Names}}' | grep -E '^supabase_' || true; }
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; }
+code_for() {
+  python3 - "$MAILPIT" "$1" <<'PY'
+import json, re, sys, urllib.parse, urllib.request
+base, email = sys.argv[1], sys.argv[2]
+q = urllib.parse.urlencode({"query": f'to:"{email}"', "limit": 1})
+with urllib.request.urlopen(f"{base}/api/v1/search?{q}", timeout=10) as r:
+    msgs = json.load(r).get("messages") or []
+if not msgs:
+    sys.exit(f"no message for {email} in the local test mailbox")
+with urllib.request.urlopen(f"{base}/api/v1/message/{msgs[0]['ID']}", timeout=10) as r:
+    m = json.load(r)
+codes = re.findall(r"(?<!\d)(\d{6})(?!\d)", (m.get("Text") or "") + " " + re.sub(r"<[^>]+>", " ", m.get("HTML") or ""))
+if not codes:
+    sys.exit("newest message has no 6-digit code")
+print(codes[0])
+PY
+}
+case "$cmd" in
+  start)
+    [ -n "$arg" ] && [ -f "$arg/supabase/config.toml" ] || { echo "$arg/supabase/config.toml missing (the repo's standard CLI config, or 'supabase init' in a scratch copy)" >&2; exit 2; }
+    r=$(running); [ -z "$r" ] || { printf 'a local Supabase stack is already running (one per VM); stop it first:\n%s\n' "$r" >&2; exit 3; }
+    avail=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
+    [ "$avail" -ge "$MIN_MB" ] || { echo "only ${avail} MB RAM available (needs ${MIN_MB}); wait for running work to finish, or let CI run it" >&2; exit 4; }
+    supabase start --workdir "$arg" -x "$EXCLUDE" ;;
+  status) supabase status --workdir "$arg" -o json ;;
+  code)   [ -n "$arg" ] || { usage; exit 2; }; code_for "$arg" ;;
+  stop)   supabase stop --workdir "$arg" --no-backup ;;
+  --selftest)
+    t=$(printf 'Your code is 123456\nlink token abcdef' | grep -oE '(^|[^0-9])[0-9]{6}([^0-9]|$)' | tr -dc 0-9)
+    [ "$t" = 123456 ] && grep -q "storage-api" <<< "$EXCLUDE" && echo "local-supabase selftest ok" ;;
+  *) usage; [ -z "$cmd" ] || [ "$cmd" = -h ] || [ "$cmd" = --help ] || exit 2 ;;
+esac

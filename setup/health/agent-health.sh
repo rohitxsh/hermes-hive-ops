@@ -30,6 +30,9 @@ for d in "$H" "$H"/profiles/*; do
   lim=$(awk -F': *' '/^context_file_max_chars:/ {print $2+0}' "$d/config.yaml"); sz=$(wc -c < "$d/SOUL.md" 2>/dev/null || echo 0)
   [ "$sz" -le "${lim:-65280}" ] || p+=("SOUL.md in $d is $sz chars, over its ${lim:-65280}-char limit: runs on smaller-window models drop the middle of the rules (set context_file_max_chars in its config.yaml, or trim)")
 done
+# a local Supabase test stack left running holds about 1 GB and blocks the next run (local-supabase: one per VM)
+c=$(docker ps --filter name=supabase_db_ --format "{{.CreatedAt}}" 2>/dev/null | head -1 | cut -d" " -f1,2)
+[ -z "$c" ] || [ $(( ($(date +%s) - $(date -d "$c" +%s)) / 3600 )) -lt 3 ] || p+=("a local Supabase stack has been running for over 3 h (forgotten?): local-supabase stop <its repo dir>")
 # shared SOUL rules (ops-core): a SOUL rebuilt or edited by hand drops or changes the managed block
 out=$("$HOME/.local/bin/hermes" ops-rules check 2>/dev/null | tail -1)
 case "$out" in "would update 0 SOUL(s)"|"") ;; *) p+=("shared SOUL rules out of date ($out): run hermes ops-rules apply");; esac
