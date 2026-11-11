@@ -7,4 +7,8 @@ profiles: @team
   - Copying in or modifying a third-party library (vendoring, forks, patched SDKs) is its own PR and needs a person's yes first.
   - Architecture and design guarantees (timeouts, cancellation, recovery, internal invariants) live in the design doc. They are review criteria only when the issue lists them as numbered acceptance criteria.
   - Keep the whole requirement: the PM maps every acceptance criterion to an issue, and QA checks coverage across the issues. Work that truly can't be separated records why on the issue before coding.
+- Order the tickets well (adapted from mattpocock/skills to-tickets, MIT):
+  - Prefactor first: when a refactor would make the feature simple, make that refactor its own first ticket ("make the change easy, then make the easy change").
+  - A wide mechanical change across the codebase (renaming a column or a shared type, changing a shared signature) is not a vertical slice: do it expand–contract, each step its own green PR. First add the new form beside the old, then move callers over in batches, then remove the old form.
+  - Each ticket names the tickets that must finish before it can start; anything with no blockers can start now.
 - An open PR already over these limits is not restarted or force-split: finish it under the review-round rules, move what isn't needed for its acceptance criteria to "Part 2" cards, and size the next issues properly.

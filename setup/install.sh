@@ -78,9 +78,12 @@ step_patches() {  # local fixes to Hermes; re-run this step after every `hermes 
 step_skills() {  # kit skills: shared ones for every non-locked profile through skills.external_dirs
   run mkdir -p "$HOME/agents/shared-skills"
   for d in "$KIT"/skills/*/; do run rm -rf "$HOME/agents/shared-skills/$(basename "$d")"; run cp -r "$d" "$HOME/agents/shared-skills/"; done
+  # team skills (test-first, pr-body, setup-wizard): only team leads and their -dev/-qa/-devops profiles see them (step_config)
+  run mkdir -p "$HOME/agents/shared-skills-team"
+  run cp -r "$KIT"/skills-team/. "$HOME/agents/shared-skills-team/"
 }
 step_third_party() { run bash "$SETUP/third-party/install.sh" || echo "  ! some third-party installs failed (see above); continuing"; }
-step_config() { "$VENV_PY" "$SETUP/config/apply-overlay.py"; }        # these four print their plan when DRY=1
+step_config() { "$VENV_PY" "$SETUP/config/apply-overlay.py" && "$VENV_PY" "$SETUP/config/team-skills.py"; }        # these four print their plan when DRY=1
 step_soul() { "$VENV_PY" "$SETUP/soul/apply-sections.py"; run "$BIN/hermes" ops-rules apply; }   # ops-core: shared rule block
 step_jobs() { "$VENV_PY" "$SETUP/jobs/create-jobs.py"; }
 step_brain() { /usr/bin/python3 "$SETUP/brain/setup-brain.py"; }

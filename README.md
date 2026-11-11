@@ -114,6 +114,16 @@ contest / escalate / decline; one re-audit at most), `drift-report` (design docs
 temporary worktree; schedule it weekly as a monitor-gated job whose script prints `origin/main` and a digest of the
 design docs) and `docs-bootstrap` (contract-style READMEs for code that has no design docs).
 
+### `skills-team/`
+Adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, license in each folder), for team leads and their
+`-dev`, `-qa` and `-devops` profiles only (`~/agents/shared-skills-team`, added to their `skills.external_dirs` by
+`setup/config/team-skills.py`): `test-first` (agree the seams, red → green one slice at a time, no tests tied to internals
+or passing by construction, no test sprawl), `pr-body` (short PR description: a small visual, before/after evidence, merge
+danger as one-way/two-way door and blast radius) and `setup-wizard` (a bash script that walks a person through
+dashboard and credential setup and writes secrets straight to GitHub, so nobody pastes a secret into chat). The same
+source gave ops-core rule 77 (how to ask a person a question) and the PRD testing-decisions and ticket-ordering lines in
+rules 57 and 58.
+
 ## Third-party pieces (installed by `setup/third-party/install.sh`, not copied here)
 
 [obra/superpowers](https://github.com/obra/superpowers) @ 2ce8aa15 (its session-start injection is turned off by
