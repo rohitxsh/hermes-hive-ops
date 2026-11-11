@@ -91,13 +91,8 @@ T=$(mktemp -d) && GL=https://github.com/gitleaks/gitleaks/releases/download/v8.3
   && curl -fsSL -o "$T/g.tgz" "$GL/gitleaks_8.30.1_linux_x64.tar.gz" && curl -fsSL -o "$T/sums" "$GL/gitleaks_8.30.1_checksums.txt" \
   && (cd "$T" && grep " gitleaks_8.30.1_linux_x64.tar.gz$" sums | sed "s/gitleaks_8.30.1_linux_x64.tar.gz/g.tgz/" | sha256sum -c - >/dev/null) \
   && tar xzf "$T/g.tgz" -C "$T" gitleaks && install -m 755 "$T/gitleaks" "$HOME/.local/bin/gitleaks" && echo "  ok" || echo "  gitleaks install failed"; rm -rf "$T"
-# The same skills for the coding CLIs: files in ~/.agents/skills (Codex reads it), a symlink in ~/.claude/skills for Claude Code
-mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
-for s in ast-grep playwright-cli agp-9-upgrade differential-review; do
-  src=$(find "$HH"/profiles/*/skills -maxdepth 3 -type d -name "$s" 2>/dev/null | head -1)
-  [ -n "$src" ] && [ ! -e "$HOME/.agents/skills/$s" ] && cp -r "$src" "$HOME/.agents/skills/$s"
-  [ -e "$HOME/.agents/skills/$s" ] && [ ! -e "$HOME/.claude/skills/$s" ] && ln -s "$HOME/.agents/skills/$s" "$HOME/.claude/skills/$s"
-done
+# Coding-relevant skills for the coding CLIs (Claude Code, Codex): team skills, review/search tools, Flutter and Dart
+bash "$(dirname "$0")/cli-skills.sh"
 
 echo "== Web UIs: Hermes's own Webapp (9120) and dashboard (9119); set their sign-ins with tools/ui-password/ui-password"
 echo "== Optional hub skills (per profile): hermes -p <profile> skills install skills-sh/supabase/agent-skills/skills/supabase"

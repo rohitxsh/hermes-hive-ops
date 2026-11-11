@@ -122,7 +122,9 @@ or passing by construction, no test sprawl), `pr-body` (short PR description: a 
 danger as one-way/two-way door and blast radius) and `setup-wizard` (a bash script that walks a person through
 dashboard and credential setup and writes secrets straight to GitHub, so nobody pastes a secret into chat). The same
 source gave ops-core rule 77 (how to ask a person a question) and the PRD testing-decisions and ticket-ordering lines in
-rules 57 and 58.
+rules 57 and 58. The coding CLIs (Claude Code, Codex) get the same three plus the Flutter and Dart
+official skills and the review/search tools through `setup/third-party/cli-skills.sh` (`~/.agents/skills`, linked into
+`~/.claude/skills`).
 
 ## Third-party pieces (installed by `setup/third-party/install.sh`, not copied here)
 
