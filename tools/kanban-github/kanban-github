@@ -16,6 +16,7 @@ Config ~/agents/kanban-github/config.json:
   weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
   default_assignee                GitHub login used when no person or role applies (so no issue is left unassigned), optional
+  keep_open_label                 label (e.g. "feature") whose issues a finished card never closes or marks Done, optional
 A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
 in its comments) maps to it; otherwise one issue is created. The
 mapping lives in ~/agents/kanban-github/map.json; GitHub never sees card ids or VM paths. Status follows the card
@@ -142,7 +143,16 @@ def comment_issue(comments):
 def referenced_issue(card):
     """An existing issue the card names in its title, or as "issue #N" / "issues/N" early in its body, or keeps citing
     in its comments (never a PR)."""
-    m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or ISSUE_REF.search(card.get("body", "")[:300])
+    # search the whole body and keep a reference only if it STARTS early: slicing first cut "issue #114" to "issue #11"
+    early = ISSUE_REF.search(card.get("body", ""))
+    m = re.search(r"(?<!PR )(?<!PR)#(\d{1,4})\b", card["title"]) or (early if early and early.start() < 300 else None)
+    # A bare title number can identify the PR, not the issue. Require matching
+    # explicit PR evidence before preferring the body's introductory issue link.
+    if m and not ISSUE_REF.search(card["title"]):
+        number = next(g for g in m.groups() if g)
+        intro = card.get("body", "")[:620]  # past 600 so a reference starting before 600 is never cut
+        if re.search(rf"/pull/{number}\b|\bPR\s*#?{number}\b", intro):
+            m = ISSUE_REF.search(intro) or m
     return int(next(g for g in m.groups() if g)) if m else card.get("comment_issue")
 
 
@@ -348,6 +358,10 @@ def main(args):
                 gh("issue", "edit", str(n), "-R", repo, *edit)
                 changed += 1
             mp[f"init:{c['id']}"] = True
+            keep = conf.get("keep_open_label")
+            if c["status"] == "done" and keep and keep in {lb["name"] for lb in iss["labels"]}:
+                json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
+                continue  # a feature issue stays open and off Done until the feature itself ships; people close it
             if c["status"] == "done" and created and iss["state"] == "OPEN":
                 gh("issue", "close", str(n), "-R", repo, "--reason", "completed")
                 changed += 1
