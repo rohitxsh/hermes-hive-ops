@@ -8,7 +8,7 @@ the GitHub project is the team's dashboard. No model calls; uses the gh wrapper.
 
 Config ~/agents/kanban-github/config.json:
   repo, owner, project            GitHub repo ("ORG/REPO"), project owner and number
-  people_from                     a config with "people" (aliases + github logins), e.g. ~/agents/inbox/config.json
+  people_from                     a config with "people" (aliases + github logins, optional "display" name for the board), e.g. ~/agents/inbox/config.json
   role_github, role_labels        per Kanban assignee profile: fallback GitHub assignees, labels
   include_title, exclude_title    regexes on card titles; exclude_assignees: profiles never mirrored (e.g. the admin)
   private_terms                   optional regex of deployment-specific words (profile names, channels); a card
@@ -115,7 +115,7 @@ def waiting_on(status, reason, people):
     if status not in ("scheduled", "blocked", "triage"):
         return ""
     scope = waiting_scope(reason)
-    return ", ".join(p.get("name") or p["key"] for p in people
+    return ", ".join(p.get("display") or p.get("name") or p["key"] for p in people
                      if any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", scope, re.I) for a in p.get("aliases", [])))
 
 
@@ -220,7 +220,7 @@ def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
         return []
     repo, agents = conf["repo"], {a.lower() for a in conf.get("agent_logins", [])}
     by_issue = {v: k for k, v in mp.items() if k.startswith("t_") and isinstance(v, int)}
-    names = {g: p.get("name") or p["key"] for p in people for g in p.get("github", [])}
+    names = {g: p.get("display") or p.get("name") or p["key"] for p in people for g in p.get("github", [])}
     notes = []
     for cm in json.loads(gh("api", f"repos/{repo}/issues/comments?since={since}&per_page=100")):
         n = int(cm["issue_url"].rsplit("/", 1)[1])
