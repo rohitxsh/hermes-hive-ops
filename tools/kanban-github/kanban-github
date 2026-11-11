@@ -17,6 +17,7 @@ Config ~/agents/kanban-github/config.json:
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
   default_assignee                GitHub login used when no person or role applies (so no issue is left unassigned), optional
   (title codes GO-LIVE / POST-LAUNCH keep the go-live / post-launch label on the issue; a retitled card updates the title it created)
+  full_refresh_hours              re-apply every card's Status/Waiting on this often, healing lanes moved elsewhere (default 6)
   keep_open_label                 label (e.g. "feature") whose issues a finished card never closes or marks Done, optional
 A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
 in its comments) maps to it; otherwise one issue is created. The
@@ -378,6 +379,9 @@ def main(args):
         gh("label", "create", conf["owner_label"], "-R", repo, "--color", "C5DEF5", "--description", "Owned by people outside GitHub")
     changed = 0
     every = cards(conf)
+    # Board workflows and people can move a lane behind the sync's back; the state cache below would never notice.
+    # Re-apply every card's Status and Waiting on now and then (default every 6 h) so such drift heals by itself.
+    refresh = time.time() - float(mp.get("_refreshed_at", 0) or 0) > float(conf.get("full_refresh_hours", 6)) * 3600
     for c in todo:
         # veto both the issue close and project Done (which can auto-close it) while linked work is live
         if c["status"] == "done" and unfinished_issue_work(c, every, mp):
@@ -444,7 +448,7 @@ def main(args):
             if r.returncode == 0:
                 mp[f"noted:{c['id']}"] = True
         state = [d["status"], d["waiting"]]
-        if mp.get(f"state:{c['id']}") == state:
+        if not refresh and mp.get(f"state:{c['id']}") == state:
             json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
             continue  # nothing changed since the last run: skip the project calls
         url = f"https://github.com/{repo}/issues/{n}"
@@ -461,6 +465,9 @@ def main(args):
         else:
             gh("project", "item-edit", "--id", item, "--project-id", proj["id"], "--field-id", wf["id"], "--clear")
         mp[f"state:{c['id']}"] = state
+        json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
+    if refresh:
+        mp["_refreshed_at"] = time.time()
         json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
     if changed:
         print(f"kanban-github: {changed} change(s)")
