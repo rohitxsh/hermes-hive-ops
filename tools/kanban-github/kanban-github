@@ -16,6 +16,7 @@ Config ~/agents/kanban-github/config.json:
   weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
   default_assignee                GitHub login used when no person or role applies (so no issue is left unassigned), optional
+  (title codes GO-LIVE / POST-LAUNCH keep the go-live / post-launch label on the issue; a retitled card updates the title it created)
   keep_open_label                 label (e.g. "feature") whose issues a finished card never closes or marks Done, optional
 A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
 in its comments) maps to it; otherwise one issue is created. The
@@ -38,6 +39,7 @@ H = os.path.expanduser("~")
 D = f"{H}/agents/kanban-github"
 GH = f"{H}/.local/bin/gh"
 STATUS = {"todo": "Backlog", "ready": "Ready", "running": "In Progress", "review": "In Review", "triage": "Blocked"}
+CODE_LABELS = {"GO-LIVE": "go-live", "POST-LAUNCH": "post-launch"}  # title code -> issue label
 MONTHS = {"Oct": 10, "Nov": 11, "Dec": 12, "Jan": 1}
 
 
@@ -261,14 +263,67 @@ def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
     return notes
 
 
+def repair_titles(conf, repairs):
+    """Apply an explicit, compare-before-write title register only; no map/lifecycle edits."""
+    if not isinstance(repairs, list) or not repairs:
+        raise ValueError("title register must be a nonempty list")
+    seen = set()
+    for entry in repairs:
+        if not isinstance(entry, dict) or set(entry) != {"number", "before", "title"}:
+            raise ValueError("invalid title register entry")
+        number, before, title = entry["number"], entry["before"], entry["title"]
+        if type(number) is not int or number <= 0 or number in seen:
+            raise ValueError("invalid or duplicate issue number")
+        if not isinstance(before, str) or not before or not isinstance(title, str):
+            raise ValueError("invalid title text")
+        if not title.startswith(("GO-LIVE · ", "POST-LAUNCH · ")) or public_text(title) != title:
+            raise ValueError("title is not a safe explicit launch classification")
+        if any(c in title for c in "\r\n"):
+            raise ValueError("multiline title")
+        seen.add(number)
+    changed = 0
+    for entry in repairs:
+        number, before, title = entry["number"], entry["before"], entry["title"]
+        fields = "number,title,state,body,assignees,labels,milestone,url"
+        original = json.loads(gh("issue", "view", str(number), "-R", conf["repo"], "--json", fields))
+        if original["state"] != "OPEN":
+            raise ValueError(f"issue #{number} is not open; no change")
+        if original["title"] == title:
+            continue
+        if original["title"] != before:
+            raise ValueError(f"issue #{number} title changed since approved register; no overwrite")
+        gh("issue", "edit", str(number), "-R", conf["repo"], "--title", title)
+        actual = json.loads(gh("issue", "view", str(number), "-R", conf["repo"], "--json", fields))
+        expected = dict(original, title=title)
+        if actual != expected:
+            raise ValueError(f"issue #{number} readback differs beyond requested title")
+        changed += 1
+        print(f"retitled #{number}: {title}")
+    return changed
+
+
 def main(args):
+    if args[:1] == ["repair-titles"]:
+        if len(args) != 2:
+            raise ValueError("repair-titles requires one explicit JSON register")
+        conf = json.load(open(f"{D}/config.json"))
+        global PRIVATE_TERMS, FALLBACK_TITLE
+        FALLBACK_TITLE = conf.get("fallback_title") or FALLBACK_TITLE
+        PRIVATE_TERMS = re.compile(conf["private_terms"], re.I) if conf.get("private_terms") else None
+        import fcntl
+        with open(f"{D}/.lock", "a") as title_lock:
+            try:
+                fcntl.flock(title_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("sync is active; title repair was not run")
+            repair_titles(conf, json.load(open(args[1])))
+        return
     if args[:1] == ["--selftest"]:
         return selftest()
     if args[:1] not in ([], ["plan"], ["sync"]):  # anything else (e.g. --help) used to fall through to an unlocked write sync
         print(__doc__)
         return
     conf = json.load(open(f"{D}/config.json"))
-    global PRIVATE_TERMS, FALLBACK_TITLE
     FALLBACK_TITLE = conf.get("fallback_title") or FALLBACK_TITLE
     PRIVATE_TERMS = re.compile(conf["private_terms"], re.I) if conf.get("private_terms") else None
     if args[:1] == ["sync"]:  # one sync at a time: two would race on map.json and could create duplicate issues
@@ -315,6 +370,10 @@ def main(args):
                               "-f", f"description=v1.0 week {w['start']} to {w['due']}"))
             ms[w["title"]] = m["number"]
     have = {x["name"] for x in json.loads(gh("label", "list", "-R", repo, "--limit", "200", "--json", "name"))}
+    for lb in CODE_LABELS.values():
+        if lb not in have:
+            gh("label", "create", lb, "-R", repo, "--color", "B60205" if lb == "go-live" else "C5DEF5",
+               "--description", "Must be done before production go-live" if lb == "go-live" else "Deferred until after launch")
     if conf.get("owner_label") and conf["owner_label"] not in have:
         gh("label", "create", conf["owner_label"], "-R", repo, "--color", "C5DEF5", "--description", "Owned by people outside GitHub")
     changed = 0
@@ -358,6 +417,17 @@ def main(args):
                 gh("issue", "edit", str(n), "-R", repo, *edit)
                 changed += 1
             mp[f"init:{c['id']}"] = True
+            # A card retitled later (for example given a GO-LIVE code) carries the new title and week to the issue it
+            # created; the title code also keeps its go-live/post-launch label on the issue, created or referenced.
+            if created and mp.get(f"title:{c['id']}") not in (None, d["title"]):
+                gh("issue", "edit", str(n), "-R", repo, "--title", d["title"], *(["--milestone", d["milestone"]] if d["milestone"] else []))
+                changed += 1
+            mp[f"title:{c['id']}"] = d["title"]
+            code = CODE_LABELS.get(c["title"].split(" ·")[0].strip())
+            if code and mp.get(f"code:{c['id']}") != code:
+                gh("issue", "edit", str(n), "-R", repo, "--add-label", code)
+                mp[f"code:{c['id']}"] = code
+                changed += 1
             keep = conf.get("keep_open_label")
             if c["status"] == "done" and keep and keep in {lb["name"] for lb in iss["labels"]}:
                 json.dump(mp, open(f"{D}/map.json", "w"), indent=1)
