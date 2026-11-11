@@ -39,6 +39,8 @@ Take the lowest-numbered `ready` issue whose `Depends on` issues are all closed.
    - the full issue text (`gh issue view N`)
    - "Work only in this directory, on branch `issue-N-<slug>`."
    - "Run the checks listed in the ticket and fix failures before finishing. No Android/Gradle builds unless the ticket asks for one."
+   - "Tests: before writing any, read ~/agents/shared-skills-team/software-development/test-first/SKILL.md and follow it: test at the seams the issue's Testing decisions names, one failing test then the code, no tests tied to internals or passing by construction, no near-duplicate cases."
+   - "PR description: write and keep it in the format of ~/agents/shared-skills-team/software-development/pr-body/SKILL.md (summary with a small visual, before/after evidence, merge danger). It replaces any other description format in this prompt."
    - "Commit with clear messages and push the branch. Its draft pull request already exists: don't open another one and don't mark it ready. Keep its description current with `gh pr edit --body-file`: two or three plain sentences first (what this changes for the people using the product, and anything someone needs to do), then the full technical description (what changed and why, how it was tested, risks and open points), ending with `Closes #N`."
    - "Finish with a short summary: what changed, which checks ran and their results, anything left undone."
 4. Start Claude Code **in the background**. A coding run outlasts the foreground tool time limit:
