@@ -95,10 +95,10 @@ def main(argv):
 
 
 def selftest():
-    log = ("- 2026-11-09 old entry\n- 2026-11-10 Claude (Rohit: x): Cloudflare DNSSEC on\n  continued line\n"
+    log = ("- 2026-11-09 old entry\n- 2026-11-10 Claude (Owner: x): Cloudflare DNSSEC on\n  continued line\n"
            "- 2026-11-10 Claude: Supabase OTP 6 digits\n- 2026-11-11 tomorrow\n")
     got = admin_entries(log, "2026-11-10")
-    assert got == ["Claude (Rohit: x): Cloudflare DNSSEC on continued line", "Claude: Supabase OTP 6 digits"], got
+    assert got == ["Claude (Owner: x): Cloudflare DNSSEC on continued line", "Claude: Supabase OTP 6 digits"], got
     assert who("team-bot", {"team-bot"}) == "agents" and who("person-gh", {"team-bot"}) == "person-gh" and who(None, set()) == "agents"
     print("day-summary selftest ok")
     return 0
