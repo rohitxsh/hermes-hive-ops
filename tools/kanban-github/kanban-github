@@ -252,6 +252,9 @@ def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
 def main(args):
     if args[:1] == ["--selftest"]:
         return selftest()
+    if args[:1] not in ([], ["plan"], ["sync"]):  # anything else (e.g. --help) used to fall through to an unlocked write sync
+        print(__doc__)
+        return
     conf = json.load(open(f"{D}/config.json"))
     global PRIVATE_TERMS, FALLBACK_TITLE
     FALLBACK_TITLE = conf.get("fallback_title") or FALLBACK_TITLE
