@@ -48,6 +48,10 @@ for jf in [f"{H}/cron/jobs.json"] + glob.glob(f"{H}/profiles/*/cron/jobs.json"):
             continue
         if j.get("enabled", True) and j.get("state") != "paused" and (j.get("failure_streak") or 0) > 0:
             print(f"{prof}: scheduled job '{j['name']}' ({j['id']}) failing: {j.get('last_status')}, {j['failure_streak']} in a row")
+        elif j.get("enabled", True) and j.get("state") != "paused" and j.get("last_status") in ("delivery_failed", "blocked_config"):
+            # the run worked (or never started) but nobody got its output; Hermes leaves failure_streak at 0 for these
+            print(f"{prof}: scheduled job '{j['name']}' ({j['id']}) last run {j['last_status']}: "
+                  f"{str(j.get('last_delivery_error') or j.get('last_error') or '')[:200]}")
 PY
 )
 # disk space

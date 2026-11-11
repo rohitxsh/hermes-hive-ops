@@ -57,6 +57,7 @@ QUOTA = re.compile(r"\b(429|402)\b|rate.?limit|RateLimitError|usage.?limit|insuf
                    r"out of capacity|free-models-per-day|requires? (more )?credits|payment error|session limit|weekly limit|"
                    r"limit reached|limit has been reached|requires available credits|insufficient_credits|balance is too low|"
                    r"refused for billing|credential pool is exhausted|every entry in cooldown", re.I)
+JOB_FAILED = ("error", "delivery_failed", "blocked_config")   # Hermes cron last_status values that need a look
 
 
 def profiles():
@@ -118,6 +119,24 @@ def load_jobs():
     return jobs
 
 
+def job_events(state, now, jobs):
+    """Failed scheduled runs, once each. delivery_failed counts: the run worked but its output never reached anyone,
+    and Hermes leaves failure_streak at 0 for it."""
+    for (name, job_id), job in jobs.items():
+        status = job.get("last_status")
+        if status in JOB_FAILED and job.get("last_run_at"):
+            run = job["last_run_at"]
+            if state.setdefault("job_runs", {}).get(f"{name}:{job_id}") == run:
+                continue  # this failed run is already counted
+            state["job_runs"][f"{name}:{job_id}"] = run
+            err = str((job.get("last_delivery_error") if status == "delivery_failed" else job.get("last_error")) or "")
+            if QUOTA.search(err):
+                continue  # the job died on a provider limit: the quota governor handles that, not an issue
+            what = "ran but its delivery failed" if status == "delivery_failed" else f"failed ({status})"
+            msg = f"scheduled job '{job.get('name', job_id)}' ({job_id}) {what}: {err[:300]}"
+            yield f"JOB|{name}|{job_id}|{normalize(err)}", "JOB", "cron", name, msg, now
+
+
 def collect(state, now, jobs):
     """Yield (key, level, source, profile, message, when) for everything seen since the last run."""
     offsets = state.setdefault("offsets", {})
@@ -133,16 +152,7 @@ def collect(state, now, jobs):
                 # a plugin loaded once per profile logs as <plugin>__home_<hash>: one issue, not one per profile
                 source = HOME_SUFFIX.sub("", source)
                 yield f"{level}|{source}|{normalize(msg)}", level, source, name, msg, when
-    for (name, job_id), job in jobs.items():
-        if job.get("last_status") == "error" and job.get("last_run_at"):
-            run = job["last_run_at"]
-            if state.setdefault("job_runs", {}).get(f"{name}:{job_id}") == run:
-                continue  # this failed run is already counted
-            state["job_runs"][f"{name}:{job_id}"] = run
-            if QUOTA.search(str(job.get("last_error") or "")):
-                continue  # the job died on a provider limit: the quota governor handles that, not an issue
-            msg = f"scheduled job '{job.get('name', job_id)}' ({job_id}) failed: {str(job.get('last_error') or '')[:300]}"
-            yield f"JOB|{name}|{job_id}|{normalize(str(job.get('last_error') or ''))}", "JOB", "cron", name, msg, now
+    yield from job_events(state, now, jobs)
     for line in read_new(REPORTED, offsets):
         try:
             r = json.loads(line)
@@ -506,6 +516,13 @@ def selftest():
     assert not s["issues"]["JOB|jobs|j1|boom"].get("resolved_at")
     update(s, [], known, now + 60, False, {("jobs", "j1"): {"last_status": "ok"}})
     assert s["issues"]["JOB|jobs|j1|boom"]["resolved_how"] == "job's next run succeeded"
+    # a run whose delivery failed is an issue too (failure_streak stays 0), reported once per run
+    dj = {("arch", "d1"): {"name": "drift report", "last_status": "delivery_failed", "last_run_at": "r1", "failure_streak": 0,
+                           "last_delivery_error": "platform 'discord' not configured/enabled"}}
+    ev = list(job_events({}, now, dj))
+    assert len(ev) == 1 and "delivery failed" in ev[0][4] and "not configured" in ev[0][4], ev
+    st2 = {}
+    assert list(job_events(st2, now, dj)) and not list(job_events(st2, now, dj))
     chk = ("CHECK|disk", "CHECK", "self-check", "vm", "disk / is 90% full", now)
     s["health_at"], s["health_keys"] = now, ["CHECK|disk"]
     update(s, [chk], known, now, False)

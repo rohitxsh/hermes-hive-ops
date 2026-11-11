@@ -200,6 +200,19 @@ def resume_card(t, reason):
     return run([py, "-I", "-c", code, t["id"]])
 
 
+def implementer(conn, task_id, assignee):
+    """Who asked for review on this card (latest review_requested), when the card now sits with someone else.
+    An approved or reviewed PR goes back to them: the reviewer that parked the card can't act on it, and Hermes's
+    duplicate-PR guard holds a reviewer that posted the PR link until a real handoff."""
+    row = conn.execute("select payload from task_events where task_id = ? and kind = 'review_requested' "
+                       "order by created_at desc, id desc limit 1", (task_id,)).fetchone()
+    try:
+        who = (json.loads(row[0] or "{}") or {}).get("implementer") if row else None
+    except ValueError:
+        who = None
+    return who if isinstance(who, str) and who.strip() and who != assignee else None
+
+
 def approvals_waiting():
     f = f"{H}/.hermes/approval-queue.jsonl"
     req, done = {}, set()
@@ -461,7 +474,7 @@ def pr_resume():
     used = state.setdefault("pr_resumed_why", {})
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
     for t in kanban_waiting():
-        if done.get(t["id"]) == t["since"]:
+        if done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD"):  # parked on purpose
             continue
         body = (c.execute("select coalesce(body,'') from tasks where id=?", (t["id"],)).fetchone() or [""])[0]
         comments = " ".join(b for b, in c.execute("select body from task_comments where task_id=? order by created_at desc limit 5", (t["id"],)))
@@ -474,24 +487,32 @@ def pr_resume():
         if not results:
             continue
         fb = [(slug, num, w) for slug, num, ok, w in results if ok == "changes"]
+        approved = not fb and all(ok is True for *_, ok, _ in results)
+        why = "; ".join(f"{slug}#{num} {w}" for slug, num, *_, w in (fb or results))
+        if not (fb or approved):
+            continue
+        if approved and used.get(t["id"]) == why:
+            done[t["id"]] = t["since"]
+            continue
+        who = implementer(c, t["id"], t["who"])
+        if who:   # supported handoff first, so the card resumes with the role that can act on the PR
+            rc, out = run([f"{H}/.local/bin/hermes", "kanban", "reassign", t["id"], who])
+            if rc:
+                print(f"⚠️ {t['id']}: PR {why}, but handing it back to {who} failed: {clip(out, 200)}")
+                continue
+            t = dict(t, who=who)
         if fb:
-            why = "; ".join(f"{slug}#{num} {w}" for slug, num, w in fb)
             rc, out = resume_card(t, f"Review feedback: {why}. Read the PR review and comments, address them on this "
                                      f"card, then block it again with the PR URL to wait for approval.")
             if rc == 0:
                 done[t["id"]] = t["since"]
                 print(f"💬 {t['id']} ({t['who']}) resumed for review feedback: {why}")
             continue
-        if all(ok is True for *_, ok, _ in results):
-            why = "; ".join(f"{slug}#{num} {w}" for slug, num, _, w in results)
-            if used.get(t["id"]) == why:
-                done[t["id"]] = t["since"]
-                continue
-            rc, out = resume_card(t, f"Resumed automatically: {why}. Carry on with the approved work.")
-            if rc == 0:
-                done[t["id"]] = t["since"]
-                used[t["id"]] = why
-                print(f"🔓 {t['id']} ({t['who']}) resumed: {why}")
+        rc, out = resume_card(t, f"Resumed automatically: {why}. Carry on with the approved work.")
+        if rc == 0:
+            done[t["id"]] = t["since"]
+            used[t["id"]] = why
+            print(f"🔓 {t['id']} ({t['who']}) resumed: {why}")
     save("state.json", state)
 
 
@@ -591,6 +612,7 @@ def renewal_cmd(args):
 
 
 def selftest():
+    global H
     assert pr_refs("see https://github.com/o/r/pull/7", "waiting on PR #38 (issue #37)", "o/r") == [("o/r", "38"), ("o/r", "7")]
     assert pr_refs("PR #9 in a comment", "", "o/r") == [] and pr_refs("", "PR #38", "") == []
     # CI (issue 60ca3e): a slow run that fails after a newer quick run completed must still be reported
@@ -650,6 +672,32 @@ def selftest():
     assert clip("one two three four", 12) == "one two…" and clip("short", 10) == "short" and len(clip("x" * 50, 20)) == 20
     assert PR_URL.findall("see https://github.com/a/b/pull/3 and PR #4") == [("a/b", "3")]
     assert APPROVE_WORDS.match("Approved, go ahead") and APPROVE_WORDS.match("LGTM") and not APPROVE_WORDS.match("not approved")
+    # pr-resume: dev asks for review, QA passes and parks the card, a person approves -> back to dev, then resumed;
+    # a FOCUS HOLD card with an approved PR stays parked
+    h0, H = H, tempfile.mkdtemp(dir=D)
+    os.makedirs(f"{H}/.hermes")
+    kc = sqlite3.connect(f"{H}/.hermes/kanban.db")
+    kc.executescript("create table task_events(id integer primary key, task_id, kind, payload, created_at);"
+                     "create table tasks(id, body); create table task_comments(task_id, body, created_at);"
+                     "insert into tasks values ('t_1', 'Development merges after QA and human approval'), ('t_2', '');")
+    kc.execute("insert into task_events(task_id, kind, payload, created_at) values ('t_1', 'review_requested', ?, 1)",
+               (json.dumps({"implementer": "team-dev", "reviewer": "team-qa"}),))
+    kc.commit()
+    assert implementer(kc, "t_1", "team-dev") is None and implementer(kc, "t_2", "team-qa") is None
+    calls, g = [], globals()
+    saved = {k: g[k] for k in ("kanban_waiting", "pr_approved", "run", "resume_card")}
+    g["kanban_waiting"] = lambda: [
+        {"id": "t_1", "who": "team-qa", "title": "x", "since": 5, "reason": "waiting on https://github.com/o/r/pull/7", "status": "scheduled"},
+        {"id": "t_2", "who": "team-dev", "title": "y", "since": 5, "reason": "FOCUS HOLD (x) https://github.com/o/r/pull/8", "status": "scheduled"}]
+    g["pr_approved"] = lambda slug, num, since, owner: (True, "approved in review")
+    g["run"] = lambda cmd, **k: (calls.append(cmd[1:]), (0, ""))[1]
+    g["resume_card"] = lambda t, reason: (calls.append(("resume", t["id"], t["who"])), (0, ""))[1]
+    try:
+        pr_resume()
+    finally:
+        g.update(saved)
+        H = h0
+    assert calls == [["kanban", "reassign", "t_1", "team-dev"], ("resume", "t_1", "team-dev")], calls
     print("selftest ok")
 
 

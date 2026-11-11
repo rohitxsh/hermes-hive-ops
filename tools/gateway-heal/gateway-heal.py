@@ -5,7 +5,8 @@ After a Discord reconnect the gateway can lose track of live conversations: ever
 the ✅ tick but no reply, and the logs show "Session … paused: not_found". When that line appears, this
 schedules a graceful in-band restart (SIGUSR1: the gateway stops taking new work and lets running turns and
 jobs finish first) and posts one note. At most one restart per COOLDOWN; prints nothing otherwise.
-`gateway-heal.py --selftest` checks the log parsing.
+`gateway-heal.py --selftest` checks the log parsing and the cooldown state (a fault seen during the cooldown stays
+pending until a restart is actually scheduled).
 """
 import glob
 import json
@@ -44,6 +45,35 @@ def gateway_started():
         return "0"
 
 
+def restart():
+    """Graceful restart in 30 s (so this run's note is delivered before the gateway drains); True if it was scheduled."""
+    r = subprocess.run(["sudo", "-n", "systemd-run", "--on-active=30", "systemctl", "kill", "-s", "SIGUSR1",
+                        "--kill-whom=main", "agent-worker@hermes"], capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def step(state, faults, now, now_str, do_restart):
+    """Update state for one run; returns the note to post, if any. Faults found during the cooldown, or when the
+    restart couldn't be scheduled, stay pending: `checked` only moves past them once a restart was scheduled."""
+    if not faults:
+        state["checked"] = now_str
+        return None
+    if now - state.get("restarted_at", 0) <= COOLDOWN:
+        return None
+    if not do_restart():
+        if now - state.get("failed_note_at", 0) > COOLDOWN:   # one note per cooldown, not every 2 minutes
+            state["failed_note_at"] = now
+            return (f"⚠ The gateway lost track of {len(faults)} conversation(s), but scheduling its graceful restart "
+                    f"failed (sudo systemd-run). Restart it when idle: sudo systemd-run --unit hermes-restart-idle-$(date +%s) "
+                    f"--collect ~/.local/bin/hermes-restart-idle")
+        return None
+    state["checked"] = now_str
+    state["restarted_at"] = now
+    return (f"♻ The gateway lost track of {len(faults)} conversation(s) after a Discord reconnect "
+            f"(messages got a ✅ but no reply). Restarting it gracefully now; running work finishes first. "
+            f"If something you sent in the last few minutes got no answer, please send it again.")
+
+
 def main():
     try:
         state = json.load(open(STATE))
@@ -59,15 +89,9 @@ def main():
                 faults |= new_faults(fh.readlines(), since)
         except OSError:
             pass
-    state["checked"] = now_str
-    if faults and time.time() - state.get("restarted_at", 0) > COOLDOWN:
-        # Delay so this run finishes and its note is delivered before the gateway starts draining.
-        subprocess.run(["sudo", "-n", "systemd-run", "--on-active=30", "systemctl", "kill", "-s", "SIGUSR1",
-                        "--kill-whom=main", "agent-worker@hermes"], capture_output=True)
-        state["restarted_at"] = time.time()
-        print(f"♻ The gateway lost track of {len(faults)} conversation(s) after a Discord reconnect "
-              f"(messages got a ✅ but no reply). Restarting it gracefully now; running work finishes first. "
-              f"If something you sent in the last few minutes got no answer, please send it again.")
+    msg = step(state, faults, time.time(), now_str, restart)
+    if msg:
+        print(msg)
     with open(STATE, "w") as fh:
         json.dump(state, fh)
 
@@ -79,6 +103,17 @@ def selftest():
     assert new_faults(lines, "2026-10-25 00:00:00") == {"20261022_091631_62b62465", "20261022_224728_8ea5b87c"}
     assert new_faults(lines, "2026-10-25 01:00:00") == {"20261022_224728_8ea5b87c"}
     assert new_faults(lines, "2026-10-25 02:00:00") == set()
+    # a fault seen during the cooldown stays pending and is healed once the cooldown ends (review finding)
+    st, calls = {"checked": "2026-11-12 04:00:00", "restarted_at": 1000.0}, []
+    ok = lambda: calls.append(1) or True
+    assert step(st, {"s1"}, 1000.0 + 60, "2026-11-12 04:06:00", ok) is None and st["checked"] == "2026-11-12 04:00:00"
+    assert step(st, {"s1"}, 1000.0 + COOLDOWN + 60, "2026-11-12 04:16:00", ok).startswith("♻") and calls == [1]
+    assert st["checked"] == "2026-11-12 04:16:00" and st["restarted_at"] == 1000.0 + COOLDOWN + 60
+    # a restart that can't be scheduled keeps the fault pending and notes it once per cooldown
+    st, bad = {"checked": "2026-11-12 04:00:00"}, (lambda: False)
+    assert step(st, {"s2"}, 5000.0, "2026-11-12 05:00:00", bad).startswith("⚠") and st["checked"] == "2026-11-12 04:00:00"
+    assert step(st, {"s2"}, 5120.0, "2026-11-12 05:02:00", bad) is None and "restarted_at" not in st
+    assert step(st, {"s2"}, 5240.0, "2026-11-12 05:04:00", ok).startswith("♻") and st["checked"] == "2026-11-12 05:04:00"
     print("gateway-heal selftest ok")
 
 
