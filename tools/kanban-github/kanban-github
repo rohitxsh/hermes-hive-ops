@@ -15,6 +15,7 @@ Config ~/agents/kanban-github/config.json:
                                   title or summary matching it is not copied to the public issue
   weeks                           [{"title", "start": "YYYY-MM-DD", "due": "YYYY-MM-DD"}] -> GitHub milestones
   owner_label                     label for items owned by people without GitHub logins (e.g. founders), optional
+  default_assignee                GitHub login used when no person or role applies (so no issue is left unassigned), optional
 A card that names an existing issue ("#N" in its title, "issue #N" early in its body, or the same "issue #N" at least twice
 in its comments) maps to it; otherwise one issue is created. The
 mapping lives in ~/agents/kanban-github/map.json; GitHub never sees card ids or VM paths. Status follows the card
@@ -181,7 +182,8 @@ def gh(*args, check=True):
 
 def desired(card, conf, people):
     who = owners(card["body"], people)
-    logins = sorted({g for p in who for g in p.get("github", [])}) or conf.get("role_github", {}).get(card["assignee"], [])
+    logins = (sorted({g for p in who for g in p.get("github", [])}) or conf.get("role_github", {}).get(card["assignee"], [])
+              or ([conf["default_assignee"]] if conf.get("default_assignee") else []))
     labels = list(conf.get("role_labels", {}).get(card["assignee"], []))
     if conf.get("owner_label") and any(not p.get("github") for p in who):
         labels.append(conf["owner_label"])
