@@ -5,6 +5,8 @@ agent:
   reasoning_effort: high
   restart_drain_timeout: 60
   disabled_toolsets: [browser]      # browser_exec off: the camofox plugin's browser_* tools drive Camofox
+context_file_max_chars: 120000       # Hermes keeps only the head and tail of a SOUL over this; unset it is 6% of the
+                                     # model window (65,280 chars on a 272K model), and team SOULs outgrow that
 approvals:
   mode: smart                       # a model judges each risky command against smart_policy
   cron_mode: smart
