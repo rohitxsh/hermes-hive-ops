@@ -169,6 +169,26 @@ def unfinished_issue_work(card, all_cards, mapping):
             and (mapping.get(o["id"]) or referenced_issue(o)) == issue]
 
 
+def has_open_pr(connection):
+    """Only OPEN linked PRs own the issue lane; merged references remain in GitHub's connection.
+
+    Refuse incomplete/unknown evidence rather than treating an unobserved PR as closed.
+    A zero total is sufficient even for older empty-connection fixtures.
+    """
+    total = connection.get("totalCount")
+    if type(total) is not int or total < 0:
+        raise RuntimeError("invalid linked PR total")
+    nodes = connection.get("nodes", [] if total == 0 else None)
+    if not isinstance(nodes, list) or len(nodes) != total:
+        raise RuntimeError("incomplete linked PR scope")
+    if connection.get("pageInfo", {}).get("hasNextPage", False):
+        raise RuntimeError("incomplete linked PR page")
+    states = [node.get("state") if isinstance(node, dict) else None for node in nodes]
+    if any(state not in ("OPEN", "CLOSED", "MERGED") for state in states):
+        raise RuntimeError("invalid linked PR state")
+    return "OPEN" in states
+
+
 def cards(conf):
     c = sqlite3.connect(f"file:{H}/.hermes/kanban.db?mode=ro", uri=True, timeout=10)
     out = []
@@ -454,9 +474,9 @@ def main(args):
         url = f"https://github.com/{repo}/issues/{n}"
         item = json.loads(gh("project", "item-add", num, "--owner", owner, "--url", url, "--format", "json"))["id"]
         linked = json.loads(gh("api", "graphql", "-f", "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
-                               "{issue(number:$n){closedByPullRequestsReferences(first:1,includeClosedPrs:false){totalCount}}}}",
+                               "{issue(number:$n){closedByPullRequestsReferences(first:100,includeClosedPrs:true){totalCount nodes{state} pageInfo{hasNextPage}}}}}",
                                "-f", f"o={repo.split('/')[0]}", "-f", f"r={repo.split('/')[1]}", "-F", f"n={n}"))
-        has_pr = linked["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["totalCount"] > 0
+        has_pr = has_open_pr(linked["data"]["repository"]["issue"]["closedByPullRequestsReferences"])
         if d["status"] in opts and not has_pr:
             gh("project", "item-edit", "--id", item, "--project-id", proj["id"], "--field-id", sf["id"],
                "--single-select-option-id", opts[d["status"]])
