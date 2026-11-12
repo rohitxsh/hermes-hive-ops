@@ -20,6 +20,7 @@ created it. Whether a listed card really waits on a person is the agent's call.
 import glob
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -54,7 +55,19 @@ def pm_author():
     return author
 
 
-def candidates(db, now, diags=()):
+def waits_on_agent(reason, agents):
+    """True when a park reason says it waits on one of this machine's agent profiles ("waiting on team-qa for ...")."""
+    m = re.search(r"\bwaiting (?:on|for) ([\w-]+)", reason or "", re.I)
+    return bool(m) and m.group(1).lower() in agents
+
+
+def agent_profiles():
+    return {n.lower() for n in os.listdir(os.path.expanduser("~/.hermes/profiles"))} if os.path.isdir(
+        os.path.expanduser("~/.hermes/profiles")) else set()
+
+
+def candidates(db, now, diags=(), agents=None):
+    agents = agent_profiles() if agents is None else agents
     author = pm_author()
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
     # respawn_guarded fires every tick while a card is held, so it must not count as activity
@@ -114,6 +127,11 @@ def candidates(db, now, diags=()):
             why = "not-picked-up"
         elif status == "running" and age > 30:  # last_ev includes heartbeats; an older run's heartbeat must not count
             why = "no-heartbeat"
+        elif status == "scheduled" and reason.startswith("FOCUS HOLD"):
+            continue   # parked on purpose until the PM opens the next slice: not stuck
+        elif status == "scheduled" and age > 30 and waits_on_agent(reason, agents):
+            # an agent never wakes a card parked on it: the work needs a review request or a card of its own
+            why = "waits-on-agent"
         elif status == "scheduled" and age > 24 * 60:
             why = "parked-24h"
         elif status == "todo" and open_parents == 0 and age > 12 * 60:
@@ -278,6 +296,21 @@ def selftest():
         assert ids == ["a", "b", "c", "d", "e", "f", "r", "u"], got
         assert "[waiting-on-person 1d]" in got[1] and "@unassigned(created by research) [not-picked-up]" in got[7], got
         assert "[blocked]" in got[0] and "no unlink tool" in got[0] and "[diagnostic:repeated_crashes]" in got[4]
+        # parked waiting on another agent profile: flagged after 30 min; FOCUS HOLD parks are never flagged
+        c = sqlite3.connect(db)
+        c.executescript("""insert into tasks (id, status, assignee, title, block_kind) values
+              ('s1', 'scheduled', 'team-dev', 'waits on qa', null), ('s2', 'scheduled', 'team-dev', 'held', null),
+              ('s3', 'scheduled', 'team-dev', 'waits on person', null);
+            insert into task_events (task_id, kind, created_at, payload) values
+              ('s1', 'scheduled', 90000, '{"reason": "PR #5: waiting on team-qa for the verdict"}'),
+              ('s2', 'scheduled', 0, '{"reason": "FOCUS HOLD (x): parked"}'),
+              ('s3', 'scheduled', 90000, '{"reason": "waiting on owner1 for approval"}');""")
+        c.commit(); c.close()
+        got2 = candidates(db, 100000, {}, {"team-qa", "team-dev"})
+        flagged = {x.split()[0]: x for x in got2}
+        assert "[waits-on-agent]" in flagged["s1"] and "s2" not in flagged and "s3" not in flagged, got2
+        c = sqlite3.connect(db)
+        c.execute("delete from tasks where id in ('s1','s2','s3')"); c.commit(); c.close()
         # Latest/newer PM comments change visibility only, never release authority.
         c = sqlite3.connect(db)
         c.execute('create table task_comments (id integer primary key, task_id, author, body, created_at)')
