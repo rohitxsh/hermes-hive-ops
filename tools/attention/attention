@@ -361,7 +361,10 @@ def pr_approved(slug, num, since, owner):
     rc, js = run([f"{H}/.local/bin/gh", "pr", "view", str(num), "-R", slug, "--json",
                   "state,reviewDecision,labels,comments,mergedAt,reviews,headRefOid"], timeout=60)
     if rc:
-        return False, "unreadable"
+        # "PR #N" in a reason is sometimes an issue number; an issue can't approve, so it doesn't hold the card
+        rc2, kind = run([f"{H}/.local/bin/gh", "api", f"repos/{slug}/issues/{num}", "--jq",
+                         'if .pull_request then "pr" else "issue" end'], timeout=60)
+        return (None, "not a pull request") if rc2 == 0 and kind.strip() == "issue" else (False, "unreadable")
     try:
         d = json.loads(js or "{}")
         # gh pr view's aggregate approval can survive a push. Fetch every review,
@@ -487,8 +490,12 @@ def pr_resume():
         if not results:
             continue
         fb = [(slug, num, w) for slug, num, ok, w in results if ok == "changes"]
-        approved = not fb and all(ok is True for *_, ok, _ in results)
-        why = "; ".join(f"{slug}#{num} {w}" for slug, num, *_, w in (fb or results))
+        # one new approval wakes the card: reasons also name the PRs that come after it, and those
+        # can't be approved until the card acts (waiting for all of them left approved cards parked)
+        ok_r = [r for r in results if r[2] is True]
+        approved = not fb and bool(ok_r)
+        why = "; ".join(f"{slug}#{num} {w}" for slug, num, *_, w in (fb or ok_r))
+        pending = ", ".join(f"#{num}" for slug, num, ok, _ in results if ok is not True)
         if not (fb or approved):
             continue
         if approved and used.get(t["id"]) == why:
@@ -508,7 +515,8 @@ def pr_resume():
                 done[t["id"]] = t["since"]
                 print(f"💬 {t['id']} ({t['who']}) resumed for review feedback: {why}")
             continue
-        rc, out = resume_card(t, f"Resumed automatically: {why}. Carry on with the approved work.")
+        rest = f" Not approved yet: {pending}; if the work still needs it, park the card again." if pending else ""
+        rc, out = resume_card(t, f"Resumed automatically: {why}.{rest} Carry on with the approved work.")
         if rc == 0:
             done[t["id"]] = t["since"]
             used[t["id"]] = why
@@ -690,16 +698,23 @@ def selftest():
     saved = {k: g[k] for k in ("kanban_waiting", "pr_approved", "run", "resume_card")}
     g["kanban_waiting"] = lambda: [
         {"id": "t_1", "who": "team-qa", "title": "x", "since": 5, "reason": "waiting on https://github.com/o/r/pull/7", "status": "scheduled"},
-        {"id": "t_2", "who": "team-dev", "title": "y", "since": 5, "reason": "FOCUS HOLD (x) https://github.com/o/r/pull/8", "status": "scheduled"}]
-    g["pr_approved"] = lambda slug, num, since, owner: (True, "approved in review")
+        {"id": "t_2", "who": "team-dev", "title": "y", "since": 5, "reason": "FOCUS HOLD (x) https://github.com/o/r/pull/8", "status": "scheduled"},
+        {"id": "t_3", "who": "team-ops", "title": "z", "since": 5, "status": "scheduled",
+         "reason": "after https://github.com/o/r/pull/9 merges, update https://github.com/o/r/pull/10 (see https://github.com/o/r/pull/11)"}]
+    g["pr_approved"] = lambda slug, num, since, owner: {"9": (True, "approved in review"), "10": (False, "waiting"),
+                                                         "11": (None, "not a pull request")}.get(num, (True, "approved in review"))
     g["run"] = lambda cmd, **k: (calls.append(cmd[1:]), (0, ""))[1]
-    g["resume_card"] = lambda t, reason: (calls.append(("resume", t["id"], t["who"])), (0, ""))[1]
+    g["resume_card"] = lambda t, reason: (calls.append(("resume", t["id"], t["who"], reason)), (0, ""))[1]
     try:
         pr_resume()
     finally:
         g.update(saved)
         H = h0
-    assert calls == [["kanban", "reassign", "t_1", "team-dev"], ("resume", "t_1", "team-dev")], calls
+    assert calls[0] == ["kanban", "reassign", "t_1", "team-dev"] and calls[1][:3] == ("resume", "t_1", "team-dev"), calls
+    assert "Not approved yet" not in calls[1][3], calls
+    # one approved PR wakes a card that also names a later PR; an issue number doesn't count as pending
+    assert len(calls) == 3 and calls[2][:3] == ("resume", "t_3", "team-ops"), calls
+    assert "o/r#9 approved" in calls[2][3] and "Not approved yet: #10;" in calls[2][3] and "#11" not in calls[2][3], calls
     print("selftest ok")
 
 
