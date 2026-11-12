@@ -162,8 +162,8 @@ def kanban_waiting():
         from tasks t where t.status in ('blocked', 'scheduled') or (t.status = 'triage' and {LOOP_HELD_SQL})""").fetchall()
     out = []
     for tid, who, title, kind, since, payload, status in rows:
-        if kind in ("dependency", "transient"):
-            continue
+        if kind in ("dependency", "transient") and status != "scheduled":
+            continue   # block_kind describes a block; a parked (scheduled) card keeps a stale one from an earlier block
         reason = ""
         try:
             reason = (json.loads(payload or "{}") or {}).get("reason", "")
