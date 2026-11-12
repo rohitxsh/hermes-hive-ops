@@ -7,7 +7,11 @@ card's current assignee count (an empty author or assignee still counts: fail cl
 still lifts the guard, as upstream. Second part (2026-11-12): an explicit unblock after the newest PR comment lifts
 it too. Workers can't unblock their own card, so an unblock is a deliberate release by a person, the PR-approval
 wake-up or the admin (upstream already treats it that way for its recent-success guard); without it, a card resumed
-after its PR was approved sat held for up to 24 h. Idempotent; `--check` reports; `--test` checks the split on a temp board.
+after its PR was approved sat held for up to 24 h. Third part (2026-11-12): a worker that parks its card on a
+dependency (dependency_wait) after its PR comment, and is then promoted when the parent finishes, resumes on that same
+PR; it is not a crash. Before this, such a card sat in Ready, guarded for the rest of the 24 h. A promotion without that
+dependency wait (a crash-blocked card auto-recovering) still stays guarded.
+Idempotent; `--check` reports; `--test` checks the split on a temp board.
 Re-run after `hermes update`, then restart the gateway."""
 import shutil
 import sys
@@ -34,13 +38,25 @@ OLD2 = """                "AND kind IN ('assigned', 'changes_requested', 'review
 NEW2 = f"""                # {MARK2}
                 "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')", cols=", kind, payload", strict=True)):
 """
+MARK3 = "local patch (2026-11-12): a chosen dependency wait, then promotion, resumes the same PR"
+OLD3 = """            return None
+        return "active_pr"
+"""
+NEW3 = f"""            return None
+        # {MARK3}
+        _dep = [t for t, _ in _rows_since(conn, "task_events", task_id, max(pr_times), "AND kind = 'dependency_wait'", strict=True)]
+        if _dep and any(_rows_since(conn, "task_events", task_id, min(_dep), "AND kind = 'promoted'", strict=True)):
+            return None
+        return "active_pr"
+"""
 
 t = F.read_text(encoding="utf-8")
+ALL = (MARK, MARK2, MARK3)
 if "--check" in sys.argv:
-    print("ok" if MARK in t and MARK2 in t else "missing")
-    sys.exit(0 if MARK in t and MARK2 in t else 1)
+    print("ok" if all(m in t for m in ALL) else "missing")
+    sys.exit(0 if all(m in t for m in ALL) else 1)
 if "--test" in sys.argv:
-    assert NEW in t and t.count(MARK) == 1 and t.count(MARK2) == 1, "patch not applied"
+    assert NEW in t and all(t.count(m) == 1 for m in ALL), "patch not applied"
     sys.path.insert(0, str(ROOT))
     import os, tempfile
     os.environ["HERMES_HOME"] = tempfile.mkdtemp()
@@ -61,6 +77,19 @@ if "--test" in sys.argv:
     time.sleep(1.1)                       # the unblock must be strictly after the PR comment
     assert kb.schedule_task(conn, own, reason="waiting on PR #33") and kb.unblock_task(conn, own)
     assert kd.check_respawn_guard(conn, own) is None, "an explicit unblock must lift the PR guard"
+    # a worker that parks on a dependency after its PR comment resumes when promoted; a bare promotion does not
+    dep, crash = (kb.create_task(conn, title=n, body="b", assignee="dev") for n in ("dependency wait", "crash recovery"))
+    for i in (dep, crash):
+        kb.add_comment(conn, i, "dev", f"opened {url}")
+    time.sleep(1.1)
+    with kb.write_txn(conn):
+        kb._append_event(conn, dep, "dependency_wait", {"reason": "waiting on the parent card"})
+    time.sleep(1.1)
+    with kb.write_txn(conn):
+        for i in (dep, crash):
+            kb._append_event(conn, i, "promoted", None)
+    assert kd.check_respawn_guard(conn, dep) is None, "a chosen dependency wait, then promotion, must lift the guard"
+    assert kd.check_respawn_guard(conn, crash) == "active_pr", "a promotion alone must stay guarded"
     print("selftest ok:", got)
     sys.exit(0)
 if MARK not in t:
@@ -77,4 +106,10 @@ if MARK2 not in t:
     compile(t, str(F), "exec")
     F.write_text(t, encoding="utf-8")
     print("patched (unblock lifts the PR guard)", F)
+if MARK3 not in t:
+    assert t.count(OLD3) == 1, "kanban_db_dispatch.py: active_pr return not found once; upstream changed, patch by hand"
+    t = t.replace(OLD3, NEW3)
+    compile(t, str(F), "exec")
+    F.write_text(t, encoding="utf-8")
+    print("patched (a chosen dependency wait, then promotion, lifts the PR guard)", F)
 print("ok")
