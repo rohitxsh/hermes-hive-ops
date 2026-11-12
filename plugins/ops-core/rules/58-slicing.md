@@ -11,4 +11,5 @@ profiles: @team
   - Prefactor first: when a refactor would make the feature simple, make that refactor its own first ticket ("make the change easy, then make the easy change").
   - A wide mechanical change across the codebase (renaming a column or a shared type, changing a shared signature) is not a vertical slice: do it expand–contract, each step its own green PR. First add the new form beside the old, then move callers over in batches, then remove the old form.
   - Each ticket names the tickets that must finish before it can start; anything with no blockers can start now.
+  - Don't bundle a part that needs no decision with a part waiting on a design approval or a person. When the owner asks for a change, anything that can ship now (wording, labels, removing a visible element) gets its own ticket and ships. Only the part that genuinely needs the decision waits for it.
 - An open PR already over these limits is not restarted or force-split: finish it under the review-round rules, move what isn't needed for its acceptance criteria to "Part 2" cards, and size the next issues properly.
