@@ -57,6 +57,9 @@ plugins:
   enabled: [approval-notify, claude-subscription-directsdk-experimental, llm-pacer, local-extract, outbound-guard,
             quota-alert, searxng-tuned, token-usage, holographic, ops-core, camofox, quota-retry, hermes-talk,
             memory-wiki]                    # merge replaces this list, so every kit plugin is named here
+  hermes-memory-store:              # holographic's settings; on defaults it stores a fact only on an explicit fact_store call
+    mirror_memory_writes: "true"    # keep every MEMORY.md/USER.md add as a searchable fact (those files are size-capped)
+    # auto_extract: "true"          # per profile, on the ones people chat with (stores stated preferences and decisions)
 web:
   search_backend: searxng-tuned     # set SEARXNG_URL in each profile's .env
   extract_backend: local-extract
