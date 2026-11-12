@@ -3,7 +3,9 @@
 
 Gracefully restart this VM's Hermes gateway only when it is idle, so chat messages don't land in the restart
 window (where Hermes can refuse them with "runtime_draining"). Idle = no agent turn running (no live turn lease in
-any profile's state.db) and no inbound chat message for QUIET seconds; checked every 15 s. A state database
+any profile's state.db), no agent cron run in flight or due within CRON_LEAD seconds (a restart at the moment a job
+starts aborts it and pauses it "with unverified admission"), and no inbound chat message for QUIET seconds; checked
+every 15 s. A state database
 it can't read counts as busy (unknown is never idle). If it is still busy after --max-wait (default 1800 s; 3 h with
 Kanban tasks running, --max-wait-kanban), it does NOT restart: it logs and reports one issue and exits 3, and the
 restart stays the admin's call. A restart under running Kanban tasks books them crashed and starts them over (upstream
@@ -28,6 +30,7 @@ GATEWAY_LOG = os.path.join(HERMES_DIR, "logs", "gateway.log")
 LOG = os.path.join(HERMES_DIR, "logs", "restart-idle.log")
 UNIT = "agent-worker@hermes"
 QUIET = 30
+CRON_LEAD = 90
 
 
 def log(msg):
@@ -71,6 +74,33 @@ def kanban_running():
                  "select count(*) from tasks where status = 'running'")
 
 
+def cron_busy(now, homes=None):
+    """Agent cron runs in flight (Hermes keeps an admission journal per run) plus enabled agent jobs due within
+    CRON_LEAD s (or up to 60 s overdue). Script-only jobs don't count: an interrupted one just runs again, and
+    the every-minute ones would never leave a gap. None when a jobs file can't be read: unknown is never idle."""
+    if homes is None:
+        homes = [HERMES_DIR] + glob.glob(os.path.join(HERMES_DIR, "profiles", "*"))
+    n = 0
+    for home in homes:
+        n += len(glob.glob(os.path.join(home, "cron", "admissions", "*.json")))
+        path = os.path.join(home, "cron", "jobs.json")
+        if not os.path.exists(path):
+            continue
+        try:
+            import json
+            data = json.load(open(path, encoding="utf-8"))
+            jobs = data.get("jobs", []) if isinstance(data, dict) else data
+            for j in jobs:
+                if not j.get("enabled", True) or j.get("state") == "paused" or j.get("no_agent"):
+                    continue
+                nxt = j.get("next_run_at")
+                if nxt and -60 <= datetime.datetime.fromisoformat(nxt).timestamp() - now <= CRON_LEAD:
+                    n += 1
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+    return n
+
+
 def last_inbound():
     """Epoch of the latest inbound chat message: the newest user message in any profile's state.db (Hermes >= 0.23 no
     longer logs "inbound message:" at INFO), or the gateway log line older versions write, whichever is later."""
@@ -106,8 +136,8 @@ def main_pid():
     return systemctl("show", "-p", "MainPID", "--value", UNIT).stdout.strip()
 
 
-def is_idle(leases, tasks, quiet_for):
-    return leases == 0 and tasks == 0 and quiet_for >= QUIET   # None (unreadable) is never 0
+def is_idle(leases, tasks, quiet_for, cron=0):
+    return leases == 0 and tasks == 0 and cron == 0 and quiet_for >= QUIET   # None (unreadable) is never 0
 
 
 def report(text):
@@ -131,6 +161,24 @@ def selftest():
         assert count([ok, old], q) == 1
         assert count([ok, bad], q) is None and count([os.path.join(d, "missing", "x.db")], q) is None
     assert not is_idle(None, 0, 999) and not is_idle(0, None, 999) and not is_idle(0, 1, 999) and is_idle(0, 0, 999)
+    assert not is_idle(0, 0, 999, 1) and not is_idle(0, 0, 999, None)
+    import json
+    with tempfile.TemporaryDirectory() as d:
+        now = 1_800_000_000
+        iso = lambda s: datetime.datetime.fromtimestamp(now + s).astimezone().isoformat()
+        os.makedirs(os.path.join(d, "cron", "admissions"))
+        jobs = [{"id": "soon", "next_run_at": iso(30)}, {"id": "later", "next_run_at": iso(600)},
+                {"id": "script", "no_agent": True, "next_run_at": iso(10)},
+                {"id": "paused", "state": "paused", "next_run_at": iso(10)}, {"id": "stale", "next_run_at": iso(-3600)}]
+        json.dump({"jobs": jobs}, open(os.path.join(d, "cron", "jobs.json"), "w"))
+        assert cron_busy(now, [d]) == 1                       # only the agent job about to start
+        open(os.path.join(d, "cron", "admissions", "x.json"), "w").close()
+        assert cron_busy(now, [d]) == 2                       # plus a run in flight
+        json.dump({"jobs": [{"id": "later", "next_run_at": iso(600)}]}, open(os.path.join(d, "cron", "jobs.json"), "w"))
+        os.unlink(os.path.join(d, "cron", "admissions", "x.json"))
+        assert cron_busy(now, [d]) == 0
+        open(os.path.join(d, "cron", "jobs.json"), "w").write("{broken")
+        assert cron_busy(now, [d]) is None
     print("hermes-restart-idle selftest ok")
 
 
@@ -148,16 +196,17 @@ def main():
     start = time.time()
     while True:
         now = time.time()
-        leases, quiet_for, tasks = live_leases(now), now - last_inbound(), kanban_running()
+        leases, quiet_for, tasks, cron = live_leases(now), now - last_inbound(), kanban_running(), cron_busy(now)
         if a.dry_run:
-            print(f"turns running: {leases}; Kanban tasks running: {tasks}; last inbound message {quiet_for:.0f} s ago; "
-                  f"idle: {is_idle(leases, tasks, quiet_for)}  (None = state unreadable, counted as busy)")
+            print(f"turns running: {leases}; Kanban tasks running: {tasks}; agent cron runs in flight or due: {cron}; "
+                  f"last inbound message {quiet_for:.0f} s ago; "
+                  f"idle: {is_idle(leases, tasks, quiet_for, cron)}  (None = state unreadable, counted as busy)")
             return
-        if is_idle(leases, tasks, quiet_for):
+        if is_idle(leases, tasks, quiet_for, cron):
             log(f"idle (no turns running, {quiet_for:.0f} s since the last message): restarting")
             break
         if now - start >= (a.max_wait_kanban if tasks != 0 else a.max_wait):
-            busy = f"{leases} turn(s), {tasks} Kanban task(s) running (None = unreadable)"
+            busy = f"{leases} turn(s), {tasks} Kanban task(s), {cron} agent cron run(s) running or due (None = unreadable)"
             if a.force:
                 log(f"still busy after {now - start:.0f} s ({busy}): --force, restarting anyway; running turns finish first")
                 break
