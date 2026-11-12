@@ -356,6 +356,36 @@ def pr_refs(text, reason, repo):
     return sorted(refs)
 
 
+CI_WAIT = re.compile(r"hosted (?:run|checks?|CI)|current(?:[- ]head)? (?:hosted )?(?:checks?|CI|runs?)\b|\brun\s?\d{8,}"
+                     r"|\bCI\b.{0,20}\b(?:finish|complete)", re.I)
+
+
+def ci_finished(prs):
+    """"<pr> hosted checks finished at <head>: ..." for the named open PRs whose every check on the current head has
+    completed (one with no checks, or any still queued or running, doesn't count); None when none has finished."""
+    done = []
+    for slug, num in prs:
+        rc, js = run([f"{H}/.local/bin/gh", "pr", "view", str(num), "-R", slug, "--json",
+                      "state,headRefOid,statusCheckRollup"], timeout=60)
+        try:
+            d = json.loads(js or "{}") if rc == 0 else {}
+        except ValueError:
+            continue
+        checks = d.get("statusCheckRollup") or []
+        if d.get("state") != "OPEN" or not checks:
+            continue
+        states = [(c.get("name") or c.get("context") or "?",
+                   (c.get("conclusion") or "").upper() if c.get("__typename") != "StatusContext" else (c.get("state") or "").upper(),
+                   (c.get("status") or "COMPLETED").upper()) for c in checks]
+        if any(status != "COMPLETED" or concl in ("", "PENDING", "EXPECTED") for _, concl, status in states):
+            continue
+        failed = sorted({n for n, concl, _ in states if concl not in ("SUCCESS", "SKIPPED", "NEUTRAL")})
+        passed = sum(1 for _, concl, _ in states if concl == "SUCCESS")
+        done.append(f"{slug}#{num} hosted checks finished at {(d.get('headRefOid') or '')[:7]}: "
+                    + (f"FAILED {', '.join(failed)}" if failed else f"{passed} passed"))
+    return "; ".join(done) or None
+
+
 def pr_approved(slug, num, since, owner):
     """(approved, why) for one PR, via the gh wrapper (it picks the repo's sealed token from -R)."""
     rc, js = run([f"{H}/.local/bin/gh", "pr", "view", str(num), "-R", slug, "--json",
@@ -497,6 +527,13 @@ def pr_resume():
         why = "; ".join(f"{slug}#{num} {w}" for slug, num, *_, w in (fb or ok_r))
         pending = ", ".join(f"#{num}" for slug, num, ok, _ in results if ok is not True)
         if not (fb or approved):
+            # a card parked until a PR's hosted checks finish: nothing else wakes it when the run ends
+            ci = ci_finished(prs) if CI_WAIT.search(t["reason"] or "") else None
+            if ci and used.get(t["id"]) != ci:
+                rc, out = resume_card(t, f"Resumed automatically: {ci}. Carry on with the step that waited for these checks.")
+                if rc == 0:
+                    done[t["id"]], used[t["id"]] = t["since"], ci
+                    print(f"🔓 {t['id']} ({t['who']}) resumed: {ci}")
             continue
         if approved and used.get(t["id"]) == why:
             done[t["id"]] = t["since"]
@@ -695,14 +732,20 @@ def selftest():
     kc.commit()
     assert implementer(kc, "t_1", "team-dev") is None and implementer(kc, "t_2", "team-qa") is None
     calls, g = [], globals()
-    saved = {k: g[k] for k in ("kanban_waiting", "pr_approved", "run", "resume_card")}
+    saved = {k: g[k] for k in ("kanban_waiting", "pr_approved", "run", "resume_card", "ci_finished")}
     g["kanban_waiting"] = lambda: [
         {"id": "t_1", "who": "team-qa", "title": "x", "since": 5, "reason": "waiting on https://github.com/o/r/pull/7", "status": "scheduled"},
         {"id": "t_2", "who": "team-dev", "title": "y", "since": 5, "reason": "FOCUS HOLD (x) https://github.com/o/r/pull/8", "status": "scheduled"},
         {"id": "t_3", "who": "team-ops", "title": "z", "since": 5, "status": "scheduled",
-         "reason": "after https://github.com/o/r/pull/9 merges, update https://github.com/o/r/pull/10 (see https://github.com/o/r/pull/11)"}]
+         "reason": "after https://github.com/o/r/pull/9 merges, update https://github.com/o/r/pull/10 (see https://github.com/o/r/pull/11)"},
+        {"id": "t_4", "who": "team-qa", "title": "w", "since": 5, "status": "scheduled",
+         "reason": "local QA PASS; waiting on current hosted run43279585589 for https://github.com/o/r/pull/12"},
+        {"id": "t_5", "who": "team-qa", "title": "v", "since": 5, "status": "scheduled",
+         "reason": "waiting on current hosted checks for https://github.com/o/r/pull/13"}]
     g["pr_approved"] = lambda slug, num, since, owner: {"9": (True, "approved in review"), "10": (False, "waiting"),
-                                                         "11": (None, "not a pull request")}.get(num, (True, "approved in review"))
+                                                         "11": (None, "not a pull request"), "12": (False, "waiting"),
+                                                         "13": (False, "waiting")}.get(num, (True, "approved in review"))
+    g["ci_finished"] = lambda prs: "o/r#12 hosted checks finished at abc1234: 4 passed" if ("o/r", "12") in prs else None
     g["run"] = lambda cmd, **k: (calls.append(cmd[1:]), (0, ""))[1]
     g["resume_card"] = lambda t, reason: (calls.append(("resume", t["id"], t["who"], reason)), (0, ""))[1]
     try:
@@ -713,8 +756,12 @@ def selftest():
     assert calls[0] == ["kanban", "reassign", "t_1", "team-dev"] and calls[1][:3] == ("resume", "t_1", "team-dev"), calls
     assert "Not approved yet" not in calls[1][3], calls
     # one approved PR wakes a card that also names a later PR; an issue number doesn't count as pending
-    assert len(calls) == 3 and calls[2][:3] == ("resume", "t_3", "team-ops"), calls
+    assert len(calls) >= 3 and calls[2][:3] == ("resume", "t_3", "team-ops"), calls
     assert "o/r#9 approved" in calls[2][3] and "Not approved yet: #10;" in calls[2][3] and "#11" not in calls[2][3], calls
+    # a card parked on hosted checks wakes once they all finished, and not while they are still running
+    assert len(calls) == 4 and calls[3][:3] == ("resume", "t_4", "team-qa") and "4 passed" in calls[3][3], calls
+    assert CI_WAIT.search("waiting on current hosted run43279585589") and CI_WAIT.search("until CI runs complete")
+    assert not CI_WAIT.search("waiting on Alex for approval")
     print("selftest ok")
 
 
