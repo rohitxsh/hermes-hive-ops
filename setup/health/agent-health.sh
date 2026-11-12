@@ -57,6 +57,15 @@ for jf in [f"{H}/cron/jobs.json"] + glob.glob(f"{H}/profiles/*/cron/jobs.json"):
                   f"{str(j.get('last_delivery_error') or j.get('last_error') or '')[:200]}")
 PY
 )
+# scheduled copies: cron runs ~/.hermes/scripts/<name>, so a tool updated only in ~/agents/src leaves the old code live
+for s in issues/issue-digest.py:issue-digest.py issues/issue-pending.sh:issue-pending.sh approval-notify/approval-notify.py:approval-notify.py \
+         gateway-heal/gateway-heal.py:gateway-heal.py quota/quota-guard.py:quota-guard.py maintenance/hermes-backup.sh:hermes-backup.sh \
+         maintenance/hermes-update-notice.py:hermes-update-notice.py kanban-doctor/kanban-doctor:kanban-doctor.py \
+         config-track/config-track:config-track.py memory-learn/memory-learn:memory-learn.py memory-export/memory-export:memory-export.py \
+         kanban-feed/kanban-feed:kanban-feed.py; do
+  a="$HOME/agents/src/${s%%:*}"; b="$HOME/.hermes/scripts/${s##*:}"
+  [ -f "$a" ] && [ -f "$b" ] && ! cmp -s "$a" "$b" && p+=("scheduled copy ~/.hermes/scripts/${s##*:} differs from ~/agents/src/${s%%:*}: diff them; if the copy has a fix the source lacks, put it in the source and add a 'kit pending:' line to HANDOFF.md; then install -m 755 the source over the copy")
+done
 # disk space
 use=$(df --output=pcent "$HOME" | tail -1 | tr -dc 0-9); [ "${use:-0}" -ge 85 ] && p+=("home filesystem is ${use}% full")
 # second brain

@@ -137,6 +137,26 @@ def job_events(state, now, jobs):
             yield f"JOB|{name}|{job_id}|{normalize(err)}", "JOB", "cron", name, msg, now
 
 
+HANDOFF = os.path.join(HOME, "agents", "HANDOFF.md")
+DUE = re.compile(r"^\s*- due (\d{4}-\d{2}-\d{2}): (.+)$")
+
+
+def due_events(now, path=HANDOFF):
+    """HANDOFF.md lines "- due YYYY-MM-DD: <task>" become an issue on that date, so the issue handler does the
+    task instead of it depending on someone remembering. The task text says to delete the line when done; a line
+    left in place after its issue is resolved reopens it."""
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    for line in lines:
+        m = DUE.match(line)
+        if m and m.group(1) <= today:
+            yield (f"REPORTED|handoff|{m.group(1)}|{normalize(m.group(2))}", "REPORTED", "handoff", "default",
+                   f"due {m.group(1)} (HANDOFF.md): {m.group(2)}", now)
+
+
 def collect(state, now, jobs):
     """Yield (key, level, source, profile, message, when) for everything seen since the last run."""
     offsets = state.setdefault("offsets", {})
@@ -153,6 +173,7 @@ def collect(state, now, jobs):
                 source = HOME_SUFFIX.sub("", source)
                 yield f"{level}|{source}|{normalize(msg)}", level, source, name, msg, when
     yield from job_events(state, now, jobs)
+    yield from due_events(now)
     for line in read_new(REPORTED, offsets):
         try:
             r = json.loads(line)
@@ -565,6 +586,20 @@ def selftest():
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    # dated HANDOFF lines become an issue on their date, not before; other lines are ignored
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
+        f.write("# Open items\n- due 2026-12-01: enable the thing, then delete this line\n"
+                "- due 2026-11-15: remove the guard\n- not dated\n  - due 2026-11-01: nested is fine\n")
+    try:
+        at = time.mktime(time.strptime("2026-11-20 12:00", "%Y-%m-%d %H:%M"))
+        ev = list(due_events(at, f.name))
+        assert [e[4] for e in ev] == ["due 2026-11-15 (HANDOFF.md): remove the guard",
+                                      "due 2026-11-01 (HANDOFF.md): nested is fine"], ev
+        assert ev[0][1] == "REPORTED" and ev[0][0].startswith("REPORTED|handoff|2026-11-15|")
+        assert list(due_events(at, f.name + ".missing")) == []
+    finally:
+        os.unlink(f.name)
     print("issue-digest selftest ok")
 
 

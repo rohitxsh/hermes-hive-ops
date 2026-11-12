@@ -64,6 +64,9 @@ def main():
     print(("@silent " if os.environ.get("USAGE_POST_SILENT") == "1" else "") + f"**Account usage — {stamp}**")
     for name, windows in readings:
         labels = [("weekly", "weekly")] if name == "Codex" else [("5h", "5-hour"), ("weekly", "weekly")]
+        has = {w.get("label") for w in windows or []}
+        if name == "Codex" and "weekly" not in has and "limit" in has:  # a used-up account reports one "limit" window
+            labels = [("limit", "limit")]
         for title, label in labels:
             print(f"- **{name} {title}:** {metric(windows, label, now)}")
 
