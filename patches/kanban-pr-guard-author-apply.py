@@ -4,7 +4,10 @@ The dispatcher holds a ready card for 24 h when any comment in that window conta
 already opened a PR"). A PM or reviewer citing a PR as a reference (for example "see .../pull/33") held unrelated
 cards the same way: "kanban dispatcher stuck ... active_pr=1" for a day at a time. Now only comments written by the
 card's current assignee count (an empty author or assignee still counts: fail closed). A reassign after the PR comment
-still lifts the guard, as upstream. Idempotent; `--check` reports; `--test` checks the split on a temp board.
+still lifts the guard, as upstream. Second part (2026-11-12): an explicit unblock after the newest PR comment lifts
+it too. Workers can't unblock their own card, so an unblock is a deliberate release by a person, the PR-approval
+wake-up or the admin (upstream already treats it that way for its recent-success guard); without it, a card resumed
+after its PR was approved sat held for up to 24 h. Idempotent; `--check` reports; `--test` checks the split on a temp board.
 Re-run after `hermes update`, then restart the gateway."""
 import shutil
 import sys
@@ -25,13 +28,19 @@ NEW = f'''    # {MARK}: a PR another role cites is not a PR this card's worker o
                 and (not c["author"] or not _assignee or c["author"] == _assignee)]
 '''
 TAG = ".bak-2026-11-03-prguard"
+MARK2 = "local patch (2026-11-12): an explicit unblock lifts the PR guard"
+OLD2 = """                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+"""
+NEW2 = f"""                # {MARK2}
+                "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')", cols=", kind, payload", strict=True)):
+"""
 
 t = F.read_text(encoding="utf-8")
 if "--check" in sys.argv:
-    print("ok" if MARK in t else "missing")
-    sys.exit(0 if MARK in t else 1)
+    print("ok" if MARK in t and MARK2 in t else "missing")
+    sys.exit(0 if MARK in t and MARK2 in t else 1)
 if "--test" in sys.argv:
-    assert NEW in t and t.count(MARK) == 1, "patch not applied"
+    assert NEW in t and t.count(MARK) == 1 and t.count(MARK2) == 1, "patch not applied"
     sys.path.insert(0, str(ROOT))
     import os, tempfile
     os.environ["HERMES_HOME"] = tempfile.mkdtemp()
@@ -48,6 +57,10 @@ if "--test" in sys.argv:
     kb.add_comment(conn, own, "dev", f"opened {url}")
     got = {n: kd.check_respawn_guard(conn, i) for n, i in (("other", other), ("own", own))}
     assert got == {"other": None, "own": "active_pr"}, got
+    import time
+    time.sleep(1.1)                       # the unblock must be strictly after the PR comment
+    assert kb.schedule_task(conn, own, reason="waiting on PR #33") and kb.unblock_task(conn, own)
+    assert kd.check_respawn_guard(conn, own) is None, "an explicit unblock must lift the PR guard"
     print("selftest ok:", got)
     sys.exit(0)
 if MARK not in t:
@@ -58,4 +71,10 @@ if MARK not in t:
         shutil.copy2(F, str(F) + TAG)
     F.write_text(t, encoding="utf-8")
     print("patched", F)
+if MARK2 not in t:
+    assert t.count(OLD2) == 1, "kanban_db_dispatch.py: handoff anchor not found once; upstream changed, patch by hand"
+    t = t.replace(OLD2, NEW2)
+    compile(t, str(F), "exec")
+    F.write_text(t, encoding="utf-8")
+    print("patched (unblock lifts the PR guard)", F)
 print("ok")
