@@ -477,9 +477,8 @@ def pr_resume():
     for t in kanban_waiting():
         if done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD"):  # parked on purpose
             continue
-        body = (c.execute("select coalesce(body,'') from tasks where id=?", (t["id"],)).fetchone() or [""])[0]
-        comments = " ".join(b for b, in c.execute("select body from task_comments where task_id=? order by created_at desc limit 5", (t["id"],)))
-        prs = pr_refs(" ".join([t["title"] or "", body, t["reason"] or "", comments]), t["reason"],
+        # only the PR the wait names (reason or title): a PR merely mentioned in the body or comments woke unrelated cards
+        prs = pr_refs(" ".join([t["title"] or "", t["reason"] or ""]), t["reason"],
                       load("config.json", {}).get("default_repo", ""))
         if not prs:
             continue
