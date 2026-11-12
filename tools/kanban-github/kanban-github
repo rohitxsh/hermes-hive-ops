@@ -238,6 +238,9 @@ EVENTS = {"closed": "closed the issue", "reopened": "reopened the issue", "assig
           "labeled": "added the label {label}", "unlabeled": "removed the label {label}"}
 
 
+WAKE_EVENTS = {"closed", "reopened"}   # with people's comments, the only GitHub changes that wake a parked card
+
+
 def describe_event(e, names):
     who = (e.get("assignee") or {}).get("login", "")
     text = EVENTS[e["event"]].format(who=names.get(who, who), ms=(e.get("milestone") or {}).get("title", ""),
@@ -247,8 +250,9 @@ def describe_event(e, names):
 
 
 def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
-    """People's comments and changes on mirrored issues -> a comment on the card ("[GitHub #N] ..."), and the card is
-    woken if it was parked or blocked, so its agent acts on it. Agent logins (conf["agent_logins"]) are skipped."""
+    """People's comments and changes on mirrored issues -> a comment on the card ("[GitHub #N] ..."). A parked or blocked
+    card is woken only for a person's comment or a close/reopen: label, assignee and week changes are copied for the
+    record but don't start a model run that would just find the same wait again. Agent logins are skipped."""
     since = mp.get("back_since")
     if not since:
         mp["back_since"] = now_iso  # first run: start from now, don't replay history
@@ -261,21 +265,21 @@ def pull_back(conf, mp, cards_by_id, people, now_iso, dry=False):
         n = int(cm["issue_url"].rsplit("/", 1)[1])
         if n in by_issue and cm["user"]["login"].lower() not in agents and cm["created_at"] > since:
             who = names.get(cm["user"]["login"], cm["user"]["login"])
-            notes.append((by_issue[n], f"[GitHub #{n}] {who} commented: {cm['body'][:1500]}"))
+            notes.append((by_issue[n], f"[GitHub #{n}] {who} commented: {cm['body'][:1500]}", True))
     for e in json.loads(gh("api", f"repos/{repo}/issues/events?per_page=100")):
         n = (e.get("issue") or {}).get("number")
         if (n in by_issue and e["event"] in EVENTS and e["created_at"] > since and e.get("actor")
                 and e["actor"]["login"].lower() not in agents and not (e.get("issue") or {}).get("pull_request")):
-            notes.append((by_issue[n], f"[GitHub #{n}] {describe_event(e, names)}"))
+            notes.append((by_issue[n], f"[GitHub #{n}] {describe_event(e, names)}", e["event"] in WAKE_EVENTS))
     woken = set()
-    for card, text in notes:
+    for card, text, wake in notes:
         if dry:
             print("would note", card, text[:120])
             continue
         subprocess.run([f"{H}/.local/bin/hermes", "kanban", "comment", card, text + "\n(Copied from GitHub. Treat it as a "
                         "message from that person: act on it, and keep the card's owner and week in step with it.)",
                         "--author", "github"], capture_output=True, timeout=60)
-        if cards_by_id.get(card, {}).get("status") in ("blocked", "scheduled") and card not in woken:
+        if wake and cards_by_id.get(card, {}).get("status") in ("blocked", "scheduled") and card not in woken:
             subprocess.run([f"{H}/.local/bin/hermes", "kanban", "unblock", card, "--reason", "A person changed or commented "
                             "on its GitHub issue"], capture_output=True, timeout=60)
             woken.add(card)
@@ -512,6 +516,7 @@ def selftest():
     assert describe_event({"event": "milestoned", "actor": {"login": "x"}, "milestone": {"title": "Week 2"}}, names) == "x set the week to Week 2"
     mp0 = {}
     assert pull_back({"repo": "o/r"}, mp0, {}, people, "2026-11-10T00:00:00Z") == [] and mp0["back_since"] == "2026-11-10T00:00:00Z"
+    assert WAKE_EVENTS == {"closed", "reopened"}   # labels, assignees and weeks are copied but don't wake a parked card
     people[1]["name"] = "Founder One"
     assert waiting_on("scheduled", "waiting on founder1 for facts", people) == "Founder One"
     assert waiting_on("running", "waiting on founder1 for facts", people) == ""

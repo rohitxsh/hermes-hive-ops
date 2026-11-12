@@ -236,7 +236,7 @@ def auto_resolve(issues, state, now, jobs):
             if health_ran and key not in state.get("health_keys", []):
                 why = "self-check passes"
         elif r["level"] != "REPORTED" and now - r["last"] > QUIET:
-            why = f"not seen for {QUIET // 3600} h"
+            why = f"quiet for {QUIET // 3600} h (not verified fixed)"   # silence is not proof of a repair
         if why:
             r.update(resolved_at=now, resolved_how=why)
 

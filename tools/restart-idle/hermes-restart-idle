@@ -1,13 +1,14 @@
 #!/usr/bin/python3
-"""hermes-restart-idle [--max-wait SECONDS] [--webui] [--dry-run]
+"""hermes-restart-idle [--max-wait SECONDS] [--webui] [--dry-run] [--force]
 
 Gracefully restart this VM's Hermes gateway only when it is idle, so chat messages don't land in the restart
 window (where Hermes can refuse them with "runtime_draining"). Idle = no agent turn running (no live turn lease in
-any profile's state.db) and no inbound chat message for QUIET seconds; checked every 15 s. After --max-wait
-(default 1800 s) it restarts anyway, and Hermes still lets running turns finish first. Running Kanban tasks are
-waited for up to --max-wait-kanban (default 3 h): a restart ends them even though their workers run in their own
-scopes (the run is booked crashed and starts over; upstream issue NousResearch/hermes-agent#148593), so don't
-lower it unless losing that work is fine. --webui also restarts the
+any profile's state.db) and no inbound chat message for QUIET seconds; checked every 15 s. A state database
+it can't read counts as busy (unknown is never idle). If it is still busy after --max-wait (default 1800 s; 3 h with
+Kanban tasks running, --max-wait-kanban), it does NOT restart: it logs and reports one issue and exits 3, and the
+restart stays the admin's call. A restart under running Kanban tasks books them crashed and starts them over (upstream
+issue NousResearch/hermes-agent#148593). --force restarts anyway after the wait (outage recovery only; Hermes still
+lets running turns finish first). --webui also restarts the
 web UI. Run it as root through systemd-run so it survives the restart it triggers:
   sudo systemd-run --unit hermes-restart-idle --collect ~/.local/bin/hermes-restart-idle --webui
 """
@@ -39,30 +40,35 @@ def log(msg):
         pass
 
 
-def live_leases(now):
+def count(dbs, sql, args=()):
+    """Sum of a count over the databases, or None when any of them can't be read: unknown must never look idle.
+    A database without the table (an older or unused profile) counts 0."""
     n = 0
-    for db in [os.path.join(HERMES_DIR, "state.db")] + glob.glob(os.path.join(HERMES_DIR, "profiles", "*", "state.db")):
+    for db in dbs:
         try:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-            n += con.execute("select count(*) from session_turn_leases where expires_at > ?", (now,)).fetchone()[0]
-            con.close()
+            try:
+                n += con.execute(sql, args).fetchone()[0]
+            finally:
+                con.close()
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                return None
         except sqlite3.Error:
-            continue
+            return None
     return n
+
+
+def live_leases(now):
+    return count([os.path.join(HERMES_DIR, "state.db")] + glob.glob(os.path.join(HERMES_DIR, "profiles", "*", "state.db")),
+                 "select count(*) from session_turn_leases where expires_at > ?", (now,))
 
 
 def kanban_running():
     """Kanban tasks a worker is running right now. Workers are separate processes that talk to the gateway, so a
     restart under them fails the run ("Gateway disconnected", then "runtime_draining") and counts against its retries."""
-    n = 0
-    for db in [os.path.join(HERMES_DIR, "kanban.db")] + glob.glob(os.path.join(HERMES_DIR, "kanban", "boards", "*", "kanban.db")):
-        try:
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-            n += con.execute("select count(*) from tasks where status = 'running'").fetchone()[0]
-            con.close()
-        except sqlite3.Error:
-            continue
-    return n
+    return count([os.path.join(HERMES_DIR, "kanban.db")] + glob.glob(os.path.join(HERMES_DIR, "kanban", "boards", "*", "kanban.db")),
+                 "select count(*) from tasks where status = 'running'")
 
 
 def last_inbound():
@@ -100,13 +106,44 @@ def main_pid():
     return systemctl("show", "-p", "MainPID", "--value", UNIT).stdout.strip()
 
 
+def is_idle(leases, tasks, quiet_for):
+    return leases == 0 and tasks == 0 and quiet_for >= QUIET   # None (unreadable) is never 0
+
+
+def report(text):
+    """One issue for the VM assistant, filed as the owner (this runs as root)."""
+    owner = pwd.getpwuid(os.stat(os.path.realpath(__file__)).st_uid)
+    tool = os.path.join(owner.pw_dir, ".local", "bin", "report-issue")
+    if os.path.exists(tool):
+        cmd = [tool, text] if os.geteuid() != 0 else ["runuser", "-u", owner.pw_name, "--", tool, text]
+        subprocess.run(cmd, capture_output=True)
+
+
+def selftest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        ok, bad, old = (os.path.join(d, n) for n in ("ok.db", "bad.db", "old.db"))
+        c = sqlite3.connect(ok); c.execute("create table tasks (status)"); c.execute("insert into tasks values ('running')"); c.commit(); c.close()
+        sqlite3.connect(old).close()                                  # no tasks table: an unused profile, counts 0
+        with open(bad, "w") as fh:
+            fh.write("not a database " * 200)
+        q = "select count(*) from tasks where status = 'running'"
+        assert count([ok, old], q) == 1
+        assert count([ok, bad], q) is None and count([os.path.join(d, "missing", "x.db")], q) is None
+    assert not is_idle(None, 0, 999) and not is_idle(0, None, 999) and not is_idle(0, 1, 999) and is_idle(0, 0, 999)
+    print("hermes-restart-idle selftest ok")
+
+
 def main():
+    if "--selftest" in sys.argv:
+        return selftest()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--max-wait", type=int, default=1800)
     ap.add_argument("--max-wait-kanban", type=int, default=3 * 3600,
                     help="how long to wait for running Kanban tasks before restarting anyway (default 3 h)")
     ap.add_argument("--webui", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help="restart anyway after the wait (outage recovery only)")
     a = ap.parse_args()
     start = time.time()
     while True:
@@ -114,15 +151,20 @@ def main():
         leases, quiet_for, tasks = live_leases(now), now - last_inbound(), kanban_running()
         if a.dry_run:
             print(f"turns running: {leases}; Kanban tasks running: {tasks}; last inbound message {quiet_for:.0f} s ago; "
-                  f"idle: {leases == 0 and tasks == 0 and quiet_for >= QUIET}")
+                  f"idle: {is_idle(leases, tasks, quiet_for)}  (None = state unreadable, counted as busy)")
             return
-        if leases == 0 and tasks == 0 and quiet_for >= QUIET:
+        if is_idle(leases, tasks, quiet_for):
             log(f"idle (no turns running, {quiet_for:.0f} s since the last message): restarting")
             break
-        if now - start >= (a.max_wait_kanban if tasks else a.max_wait):
-            log(f"still busy after {now - start:.0f} s ({leases} turn(s), {tasks} Kanban task(s) running): restarting anyway, "
-                "running turns finish first")
-            break
+        if now - start >= (a.max_wait_kanban if tasks != 0 else a.max_wait):
+            busy = f"{leases} turn(s), {tasks} Kanban task(s) running (None = unreadable)"
+            if a.force:
+                log(f"still busy after {now - start:.0f} s ({busy}): --force, restarting anyway; running turns finish first")
+                break
+            log(f"still busy after {now - start:.0f} s ({busy}): NOT restarting; the restart is still pending")
+            report(f"hermes-restart-idle: the gateway restart is still pending after {now - start:.0f} s because the VM "
+                   f"stayed busy ({busy}). Queue it again when idle, or rerun with --force only for outage recovery.")
+            return 3
         time.sleep(15)
     old = main_pid()
     systemctl("kill", "-s", "SIGUSR1", "--kill-whom=main", UNIT)
