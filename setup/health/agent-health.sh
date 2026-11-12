@@ -28,6 +28,9 @@ for d in "$H" "$H"/profiles/*; do
   # Hermes keeps only the head and tail of a context file over its limit (6% of the model's window unless
   # context_file_max_chars is set): a SOUL that outgrows it silently loses the middle of its rules.
   lim=$(awk -F': *' '/^context_file_max_chars:/ {print $2+0}' "$d/config.yaml"); sz=$(wc -c < "$d/SOUL.md" 2>/dev/null || echo 0)
+  # superseded "block to wait" wording: waits use kanban_schedule (a repeated block drops the card to triage)
+  grep -qE 'block your Kanban card with the full PR URL|never end a run without `kanban_complete`, `kanban_block` or|\(waiting for a person, a decision or a quota reset\), block it' "$d/SOUL.md" 2>/dev/null \
+    && p+=("SOUL.md in $d has the superseded 'block to wait' instruction: fix its source (waits use kanban_schedule) and rebuild")
   [ "$sz" -le "${lim:-65280}" ] || p+=("SOUL.md in $d is $sz chars, over its ${lim:-65280}-char limit: runs on smaller-window models drop the middle of the rules (set context_file_max_chars in its config.yaml, or trim)")
 done
 # a local Supabase test stack left running holds about 1 GB and blocks the next run (local-supabase: one per VM)

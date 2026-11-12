@@ -11,6 +11,7 @@ No model calls.
 Config ~/agents/inbox/config.json:
   {"guild": "...", "category": "...", "forum": null, "profile": "<PM profile for pending-human's repo>",
    "default": "<key of the person who gets items with no named owner>",
+   "focus": "<optional regex on titles: matching PRs and cards are the current focus and come first>",
    "people": [{"key": "...", "name": "...", "discord": "<user id>", "aliases": ["..."], "github": ["..."], "post": null}]}
 Items come from `pending-human` (Kanban cards waiting on people, with their latest reason) and open PRs that need a
 person (assignees and review requests by GitHub login). A card belongs to everyone whose alias or <@id> appears in
@@ -72,8 +73,8 @@ def waiting_scope(reason):
     return w.group(1) if w else None
 
 
-def items_from(cards, prs, people, default):
-    """{key: [item]} where item = {id, text, link, hours, new_key}."""
+def items_from(cards, prs, people, default, focus=None):
+    """{key: [item]} where item = {id, title, summary, link, hours, thread, owner_missing, priority}."""
     out = {p["key"]: [] for p in people}
     for c in cards:
         reason = c.get("reason") or ""
@@ -100,9 +101,19 @@ def items_from(cards, prs, people, default):
         logins = {a.get("login", "").lower() for a in pr.get("assignees") or []}
         logins |= {(r.get("login") or "").lower() for r in pr.get("reviewRequests") or []}
         hit = [p["key"] for p in people if logins & {g.lower() for g in p.get("github", [])}] or [default]
+        ci = pr.get("_ci")
+        note = {"running": " (CI still running)", "failing": " (CI failing: agents fix it first)",
+                "none": " (CI hasn't started)"}.get(ci, "")
         for k in hit:
-            out[k].append({"id": f"pr{pr['number']}", "title": f"PR #{pr['number']}: {pr['title']}", "summary": pr_state(pr),
-                           "hours": None, "link": pr["url"], "thread": None, "owner_missing": False})
+            out[k].append({"id": f"pr{pr['number']}", "title": f"PR #{pr['number']}: {pr['title']}",
+                           "summary": (pr.get("_wait") or pr_state(pr)) + note, "hours": None, "link": pr["url"],
+                           "thread": None, "owner_missing": False,
+                           "priority": 0 if ci in (None, "green") and (not focus or re.search(focus, pr["title"])) else 2})
+    # current-focus cards (config "focus" regex on the title) come right after focus PRs ready for a person; the rest by age
+    for items in out.values():
+        for it in items:
+            if "priority" not in it:
+                it["priority"] = 1 if focus and re.search(focus, it["title"]) else 3
     return out
 
 
@@ -131,18 +142,26 @@ def pr_state(pr):
     return {"CHANGES_REQUESTED": "changes requested", "REVIEW_REQUIRED": "review requested"}.get(pr.get("reviewDecision"), "needs a person")
 
 
+ACT_NEXT = 5
+
+
 def render(person, items, guild, full):
     lines = []
-    for it in sorted(items, key=lambda i: -(i["hours"] or 0)):
+    for it in sorted(items, key=lambda i: (i.get("priority", 3), -(i["hours"] or 0))):
         where = it["link"] or (f"https://discord.com/channels/{guild}/{it['thread']}" if it["thread"] else f"card {it['id']}")
         age = f" · waiting {fmt_age(it['hours'])}" if it["hours"] else ""
         flag = "**Needs an owner:** " if it["owner_missing"] else ""
         lines.append(f"• {flag}{it['title'][:100]}{age}\n  {it['summary']} → {where}")
     if not lines:
         return f"<@{person['discord']}> Nothing is waiting on you today." if full else ""
-    head = (f"<@{person['discord']}> **Waiting on you** ({len(lines)}), oldest first. Reply in each item's own thread; "
-            f"if it isn't yours, say who should take it." if full else f"<@{person['discord']}> **New for you:**")
-    return head + "\n" + "\n".join(lines)
+    if not full:
+        return f"<@{person['discord']}> **New for you:**\n" + "\n".join(lines)
+    head = (f"<@{person['discord']}> **Waiting on you** ({len(lines)}), most urgent first: PRs ready for you, then the "
+            f"current focus, then the rest by age. Reply in each item's own thread; if it isn't yours, say who should take it.")
+    if len(lines) <= ACT_NEXT:
+        return head + "\n" + "\n".join(lines)
+    return (head + "\n**Act next**\n" + "\n".join(lines[:ACT_NEXT]) + f"\n**Also waiting** ({len(lines) - ACT_NEXT})\n"
+            + "\n".join(lines[ACT_NEXT:]))
 
 
 def fmt_age(h):
@@ -187,10 +206,13 @@ def gather(conf):
     prs = None
     if repo:
         r = subprocess.run([f"{H}/.local/bin/gh", "pr", "list", "-R", repo, "--json",
-                            "number,title,url,labels,reviewDecision,isDraft,assignees,reviewRequests"],
+                            ph.PR_FIELDS + ",assignees,reviewRequests"],
                            capture_output=True, text=True, timeout=60)
-        prs = [p for p in json.loads(r.stdout or "[]") if ph.needs_human(p)] if r.returncode == 0 else None
-    return items_from(cards, prs, conf["people"], conf["default"])
+        if r.returncode == 0:
+            allp = json.loads(r.stdout or "[]")
+            ph.annotate(repo, allp)
+            prs = [dict(p, _wait=ph.pr_wait(p), _ci=ph.ci_state(p)) for p in allp if ph.needs_human(p)]
+    return items_from(cards, prs, conf["people"], conf["default"], conf.get("focus"))
 
 
 def setup(conf):
@@ -296,6 +318,20 @@ def selftest():
         got = wait_from_comments(dbp, [{"id": "t_9", "status": "blocked", "reason": "initial_status"},
                                        {"id": "t_10", "status": "blocked", "reason": "waiting on owner1 for x"}])
         assert got[0]["reason"] == "waiting on devops1 for the token." and got[1]["reason"] == "waiting on owner1 for x", got
+    # order: PRs ready for a person, then current-focus cards, then the rest by age; long lists split into Act next
+    pr_ok = {"number": 6, "title": "Login fix", "url": "u6", "labels": [], "_wait": "review requested", "_ci": "green",
+             "assignees": [{"login": "owner-gh"}], "reviewRequests": []}
+    pr_ci = dict(pr_ok, number=7, title="Login later", url="u7", _ci="running")
+    cs = [{"id": f"t_{n}", "title": t, "reason": f"waiting on owner1 for {t}.", "waiting_hours": h}
+          for n, t, h in ((20, "old later feature", 90), (21, "login journey", 2), (22, "b", 50), (23, "c", 40), (24, "d", 30))]
+    o = items_from(cs, [pr_ok, pr_ci], people, "r", r"(?i)login")["r"]
+    order = [i["id"] for i in sorted(o, key=lambda i: (i["priority"], -(i["hours"] or 0)))]
+    assert order == ["pr6", "t_21", "pr7", "t_20", "t_22", "t_23", "t_24"], order
+    dep = dict(pr_ok, number=8, title="bump deps", url="u8")
+    assert items_from([], [dep], people, "r", r"(?i)login")["r"][0]["priority"] == 2   # green but outside the focus
+    txt = render(people[0], o, "9", True)
+    assert "**Act next**" in txt and "**Also waiting** (2)" in txt and txt.index("PR #6") < txt.index("login journey")
+    assert "(CI still running)" in txt
     print("inbox selftest ok")
 
 

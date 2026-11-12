@@ -343,13 +343,14 @@ def ci_events(state):
 # ---------- PR approval -> resume ----------
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 PR_NUM = re.compile(r"\bPR #(\d+)\b")
+PR_SLUG = re.compile(r"(?<![\w/.-])([\w.-]+/[\w.-]+)#(\d+)\b")   # "owner/repo#N" in a reason, for another repo
 APPROVE_WORDS = re.compile(r"^\s*(approved?|lgtm|looks good|ship it)\b", re.I)
 
 
 def pr_refs(text, reason, repo):
     """PRs a waiting card names: full PR URLs anywhere, plus "PR #N" in its park/block reason when config sets
     default_repo. Agents write "PR #N": a PR URL in the assignee's own comment makes Hermes hold the card for 24 h."""
-    refs = set(PR_URL.findall(text))
+    refs = set(PR_URL.findall(text)) | set(PR_SLUG.findall(reason or ""))
     if repo:
         refs |= {(repo, n) for n in PR_NUM.findall(reason or "")}
     return sorted(refs)
@@ -615,6 +616,8 @@ def selftest():
     global H
     assert pr_refs("see https://github.com/o/r/pull/7", "waiting on PR #38 (issue #37)", "o/r") == [("o/r", "38"), ("o/r", "7")]
     assert pr_refs("PR #9 in a comment", "", "o/r") == [] and pr_refs("", "PR #38", "") == []
+    assert pr_refs("", "waiting on someone/tools#12 review", "o/r") == [("someone/tools", "12")]
+    assert pr_refs("", "see https://x.io/a/b#3", "") == []
     # CI (issue 60ca3e): a slow run that fails after a newer quick run completed must still be reported
     slow = {"databaseId": 10, "status": "in_progress", "conclusion": ""}
     quick = {"databaseId": 11, "status": "completed", "conclusion": "success"}

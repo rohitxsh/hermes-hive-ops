@@ -3,7 +3,8 @@
 
 Prints the Kanban cards that wait on people (blocked other than on a dependency or a transient error, parked in
 Scheduled, or held in triage after a block loop), with each one's latest reason, plus the open PRs that need a human
-(labelled human-signoff, changes requested, or awaiting review). The repo comes from ~/agents/pending-human/config.json by profile name; the
+(labelled human-signoff, changes requested, awaiting review, or approved before its latest commits). A PR a person
+approved at its current head waits on agents (merge), not on a person, and is left out. The repo comes from ~/agents/pending-human/config.json by profile name; the
 Discord guild lets the PM turn thread ids in reasons into links.
 
   pending-human [--profile NAME]     (default: this profile, from $HERMES_HOME)
@@ -47,22 +48,71 @@ def waiting_cards(db, now):
     return out
 
 
+PR_FIELDS = "number,title,url,labels,reviewDecision,isDraft,updatedAt,headRefOid,statusCheckRollup"
+
+
 def human_prs(repo):
     try:
-        r = subprocess.run([f"{H}/.local/bin/gh", "pr", "list", "-R", repo, "--json",
-                            "number,title,url,labels,reviewDecision,isDraft,updatedAt"],
+        r = subprocess.run([f"{H}/.local/bin/gh", "pr", "list", "-R", repo, "--json", PR_FIELDS],
                            capture_output=True, text=True, timeout=60)
         prs = json.loads(r.stdout or "[]") if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
         prs = None
     if prs is None:
         return None
-    return [p for p in prs if needs_human(p)]
+    annotate(repo, prs)
+    out = [p for p in prs if needs_human(p)]
+    for p in out:
+        p.update(waits_for=pr_wait(p), ci=ci_state(p))
+        p.pop("statusCheckRollup", None)
+    return out
+
+
+def annotate(repo, prs):
+    """Sets approved_at_head on APPROVED PRs: a person approved the commit the PR has now (reviewDecision alone
+    stays APPROVED after new commits, since the repo has no branch protection to dismiss stale approvals)."""
+    for p in prs:
+        if p.get("reviewDecision") != "APPROVED" or not p.get("headRefOid"):
+            continue
+        try:
+            r = subprocess.run([f"{H}/.local/bin/gh", "api", "--paginate", f"repos/{repo}/pulls/{p['number']}/reviews",
+                                "--jq", '.[] | select(.state == "APPROVED") | .commit_id'],
+                               capture_output=True, text=True, timeout=60)
+            p["approved_at_head"] = r.returncode == 0 and p["headRefOid"] in r.stdout.split()
+        except (OSError, subprocess.TimeoutExpired):
+            p["approved_at_head"] = False
+
+
+def ci_state(p):
+    """'green', 'running', 'failing' or 'none' (no checks reported yet, e.g. a run stuck in queued)."""
+    runs = p.get("statusCheckRollup") or []
+    if not runs:
+        return "none"
+    if any((c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED") for c in runs):
+        return "failing"
+    if any((c.get("status") or "COMPLETED").upper() != "COMPLETED" or (c.get("state") or "").upper() == "PENDING" for c in runs):
+        return "running"
+    return "green"
+
+
+def pr_wait(p):
+    """What a person must do on this PR, or None when it waits on agents (approved at its head: an agent merges)."""
+    labels = {(l.get("name") or "").lower() for l in p.get("labels") or []}
+    if p.get("isDraft") or p.get("approved_at_head"):
+        return None
+    if p.get("reviewDecision") == "CHANGES_REQUESTED":
+        return "changes requested"
+    if p.get("reviewDecision") == "APPROVED":   # approved, but not this commit
+        return "approval is stale: new commits since it was approved"
+    if "human-signoff" in labels:
+        return "needs a person's sign-off"
+    if p.get("reviewDecision") == "REVIEW_REQUIRED":
+        return "review requested"
+    return None
 
 
 def needs_human(p):
-    labels = {(l.get("name") or "").lower() for l in p.get("labels") or []}
-    return not p.get("isDraft") and ("human-signoff" in labels or p.get("reviewDecision") in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"))
+    return pr_wait(p) is not None
 
 
 def main(args):
@@ -100,8 +150,15 @@ def selftest():
         got = {x["id"]: x for x in waiting_cards(db, 3700)}
         assert set(got) == {"a", "d", "f"}, got
         assert got["a"]["reason"] == "approve the PRD?" and got["a"]["waiting_hours"] == 1.0
-    assert needs_human({"labels": [{"name": "human-signoff"}], "reviewDecision": "APPROVED"})
-    assert not needs_human({"labels": [], "reviewDecision": "APPROVED"})
+    so = {"labels": [{"name": "human-signoff"}], "reviewDecision": "APPROVED", "headRefOid": "h2"}
+    assert not needs_human(dict(so, approved_at_head=True))          # approved at its head: an agent merges it
+    assert pr_wait(dict(so, approved_at_head=False)).startswith("approval is stale")
+    assert pr_wait({"labels": [{"name": "human-signoff"}], "reviewDecision": ""}) == "needs a person's sign-off"
+    assert pr_wait({"labels": [], "reviewDecision": "CHANGES_REQUESTED"}) == "changes requested"
+    assert ci_state({"statusCheckRollup": []}) == "none"
+    assert ci_state({"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}) == "green"
+    assert ci_state({"statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": ""}]}) == "running"
+    assert ci_state({"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]}) == "failing"
     assert not needs_human({"isDraft": True, "labels": [], "reviewDecision": "REVIEW_REQUIRED"})
     print("selftest ok")
 
