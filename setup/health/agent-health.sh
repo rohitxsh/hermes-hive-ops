@@ -79,6 +79,28 @@ use=$(df --output=pcent "$HOME" | tail -1 | tr -dc 0-9); [ "${use:-0}" -ge 85 ] 
 for f in "$HOME"/.hermes/profiles/*/plugins/hermes-talk/pyproject.toml; do
   [ -e "$f" ] && p+=("hermes-talk in profile $(basename "$(dirname "$(dirname "$(dirname "$f")")")") has its pyproject.toml back (plugin update?): it collides with the default profile's package and the next venv sync fails; move it to ~/agents/src/talk-pyproject-aside/<profile>/")
 done
+# private terms: names a shared machine's users must not see (the owner's other machines, home network). The list holds
+# sha256 hashes of lowercase terms, so the file itself names nothing: printf %s term | sha256sum >> ~/agents/private-terms.sha256
+if [ -s "$HOME/agents/private-terms.sha256" ]; then
+  hits=$(/usr/bin/python3 - "$HOME/agents/private-terms.sha256" <<'PY'
+import glob, hashlib, os, re, sys
+bad = {l.split()[0] for l in open(sys.argv[1]) if l.strip()}
+H = os.path.expanduser("~")
+files = [H + "/agents/ADMIN-CHANGES.md", H + "/agents/HANDOFF.md", H + "/.hermes/SOUL.md"]
+for g in ("/.hermes/profiles/*/SOUL.md", "/agents/rules/*.md", "/agents/issues/*.md", "/.hermes/memories/*.md",
+          "/.hermes/profiles/*/memories/*.md", "/.hermes/skills/**/*.md", "/.hermes/plugins/ops-core/rules/*.md"):
+    files += glob.glob(H + g, recursive=True)
+def words(t):
+    for w in set(re.findall(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", t)):
+        s = w.split("-"); yield from ("-".join(s[i:j]) for i in range(len(s)) for j in range(i + 1, len(s) + 1))
+        yield from (w.split(".", i)[-1] for i in range(1, w.count(".") + 1))  # vault.example.com -> example.com, com
+out = [f.replace(H, "~") for f in files if os.path.isfile(f)
+       and any(hashlib.sha256(w.encode()).hexdigest() in bad for w in words(open(f, errors="ignore").read().lower()))]
+print(" ".join(out))
+PY
+)
+  [ -n "$hits" ] && p+=("a term from ~/agents/private-terms.sha256 appears in: $hits. Reword it out: this machine's users must not see the owner's other machines or home network")
+fi
 
 if [ ${#p[@]} -gt 0 ]; then
   echo "$(hostname) self-check found ${#p[@]} problem(s):"; printf -- '- %s\n' "${p[@]}"; exit 1
