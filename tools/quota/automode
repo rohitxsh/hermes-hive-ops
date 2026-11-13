@@ -100,7 +100,7 @@ def on(profile):
     if job.get("prompt") != PROMPT:  # jobs created by an older automode get the current prompt
         hermes("--profile", profile, "cron", "edit", job["id"], "--prompt", PROMPT)
     home = q.profile_home(profile)
-    ok, why = q.run_allowed(q.chain(home), True, q.profile_usage(home, lambda p: q.usage(p)))
+    ok, why = q.run_allowed(q.chain(home), True, q.profile_usage(home, lambda p: q.usage(p)), (), q.paid_ok(home))
     paused = bool(job.get("paused_at")) or job.get("state") == "paused"
     state = q.load_gov_state()
     key = f"{profile}:{job['id']}"
@@ -135,7 +135,7 @@ def status(profile):
     job = loop_job(profile)
     auto = q.auto_mode(home)
     ok, why = q.run_allowed(q.chain(home), q.caps(home), q.profile_usage(home, lambda p: q.usage(p)),
-                            q.cap_providers(home) if q.caps(home) else ())
+                            q.cap_providers(home) if q.caps(home) else (), q.paid_ok(home))
     jstate = "none" if job is None else ("paused" if job.get("paused_at") or job.get("state") == "paused" else
                                          f"scheduled, next {str(job.get('next_run_at') or '')[11:16]}")
     print(f"Auto mode: {'ON' if auto else 'OFF'}{' (auto-mode caps always on)' if q.caps_always(home) else ''} ({profile}); loop job: {jstate}; quota: {'ok' if ok else 'paused: ' + why}")

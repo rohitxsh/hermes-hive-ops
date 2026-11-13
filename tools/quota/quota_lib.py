@@ -163,6 +163,23 @@ def caps(home):
     return ALL_MODES or auto_mode(home) or caps_always(home)
 
 
+PAID_API = ("openai-api", "anthropic")   # pay-per-use API keys, no subscription windows
+
+
+def paid_ok(home):
+    """True when the owner lets scheduled work continue on paid API fallbacks once the subscriptions are used up
+    ("paid_api_fallback": true in <home>/quota-caps.json; set hard spend limits on those keys)."""
+    try:
+        with open(os.path.join(home, CAPS_FILE)) as fh:
+            return bool(json.load(fh).get("paid_api_fallback"))
+    except (OSError, ValueError):
+        return False
+
+
+def _paid_ahead(providers, i, paid):
+    return paid and any(p in PAID_API for p in providers[i:])
+
+
 def cap_providers(home):
     """Providers the owner capped wherever they sit in this profile's chain ("cap_providers" in quota-caps.json)."""
     try:
@@ -353,11 +370,14 @@ def describe(windows):
                      for w in windows) or "no limits reported"
 
 
-def run_allowed(providers, auto, getu, capped=()):
-    """(allowed, reason) for scheduled work of a profile. ``capped``: providers capped wherever they are (auto caps on)."""
+def run_allowed(providers, auto, getu, capped=(), paid=False):
+    """(allowed, reason) for scheduled work of a profile. ``capped``: providers capped wherever they are (auto caps on).
+    ``paid`` (paid_ok): a paid API provider still ahead in the chain keeps work running past every cap."""
     if not providers:
         return True, ""
     i = active_index(providers, getu)
+    if _paid_ahead(providers, i, paid):
+        return True, ""
     if auto and i < len(providers) and _named(providers[i], capped):
         why = auto_cap(providers[i], getu(providers[i]))
         if why:
@@ -440,10 +460,10 @@ def profile_usage(home, getu, now=None):
     return get
 
 
-def wrap_up(providers, auto, getu, capped=()):
+def wrap_up(providers, auto, getu, capped=(), paid=False):
     """Why scheduled work should finish its current step and stop soon ("" if not): the profile is within
     WRAP_MARGIN points of the point where the governor pauses it."""
-    if not providers or not run_allowed(providers, auto, getu, capped)[0]:
+    if not providers or not run_allowed(providers, auto, getu, capped)[0] or _paid_ahead(providers, active_index(providers, getu), paid):
         return ""
     i, last = active_index(providers, getu), min(1, len(providers) - 1)
     if auto and i < len(providers) and _named(providers[i], capped):
@@ -504,6 +524,11 @@ def selftest():
     c71 = [_window("5-hour", 71, "2026-10-25T03:00:00+00:00"), _window("weekly", 20, None)]
     assert run_allowed(c, False, fake({"openai-codex": ok, "claude": ok})) == (True, "")
     assert run_allowed(c, False, fake({"openai-codex": out5, "claude": c71}))[0]      # second provider is fine to use
+    paidc = ["openai-codex", "claude-subscription-directsdk-experimental", "openai-api", "anthropic"]
+    assert not run_allowed(paidc, False, fake({"openai-codex": out5, "claude": outw}))[0]          # no opt-in: pause
+    assert run_allowed(paidc, False, fake({"openai-codex": out5, "claude": outw}), paid=True)[0]   # opt-in: API credits
+    assert run_allowed(paidc, True, fake({"openai-codex": out5, "claude": c71}), ("claude",), paid=True)[0]
+    assert wrap_up(paidc, False, fake({"openai-codex": out5, "claude": outw}), paid=True) == ""
     assert not run_allowed(c, True, fake({"openai-codex": out5, "claude": c71}))[0]   # auto mode stops at 70%
     assert run_allowed(c, True, fake({"openai-codex": ok, "claude": c71}))[0]         # primary still fine
     assert not run_allowed(c, False, fake({"openai-codex": outw, "claude": out5}))[0] # weekly-out + Claude out: third tier

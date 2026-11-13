@@ -33,8 +33,8 @@ def main():
     getu = q.profile_usage(home, lambda p: q.usage(p, fresh=a.fresh))
 
     if a.gate:
-        ok, why = q.claude_code_allowed(capped, getu) if a.claude_code else q.run_allowed(providers, capped, getu, cp)
-        wrap = "" if a.claude_code or not ok else q.wrap_up(providers, capped, getu, cp)
+        ok, why = q.claude_code_allowed(capped, getu) if a.claude_code else q.run_allowed(providers, capped, getu, cp, q.paid_ok(home))
+        wrap = "" if a.claude_code or not ok else q.wrap_up(providers, capped, getu, cp, q.paid_ok(home))
         if wrap:
             print(f"wrap up: {wrap}. Finish or cleanly stop the current step, save progress and a short handoff "
                   "(done, next), and don't start new large work.")
@@ -49,8 +49,8 @@ def main():
         print(f"  {n + 1}. {q.provider_name(p)}: {q.describe(getu(p))} {mark}".rstrip())
     if i >= len(providers):
         print("  Every provider is used up right now.")
-    ok, why = q.run_allowed(providers, capped, getu, cp)
-    wrap = q.wrap_up(providers, capped, getu, cp) if ok else ""
+    ok, why = q.run_allowed(providers, capped, getu, cp, q.paid_ok(home))
+    wrap = q.wrap_up(providers, capped, getu, cp, q.paid_ok(home)) if ok else ""
     print("Scheduled work: " + (f"wrapping up ({wrap})" if wrap else "running" if ok else f"paused ({why})"))
     if capped:
         print(f"{'Quota caps (auto mode on or off)' if q.ALL_MODES else 'Auto-mode caps'}: scheduled work stops at {q.AUTO_CAP:.0f}% of the second provider's 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit; "

@@ -66,8 +66,8 @@ def main():
         capped = q.caps(home)  # auto mode, or caps the owner made permanent (quota-caps.json)
         pu = q.profile_usage(home, getu)
         cp = q.cap_providers(home) if capped else ()
-        ok, why = q.run_allowed(providers, capped, pu, cp)
-        wrap = q.wrap_up(providers, capped, pu, cp) if ok else ""
+        ok, why = q.run_allowed(providers, capped, pu, cp, q.paid_ok(home))
+        wrap = q.wrap_up(providers, capped, pu, cp, q.paid_ok(home)) if ok else ""
         if not ok:
             blocked.append(name)
         stopped, started, failed = [], [], []
