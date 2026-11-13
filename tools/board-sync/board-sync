@@ -5,8 +5,8 @@
   board-sync --dry-run    read-only: GraphQL queries only, lists proposed moves, never writes
   board-sync --selftest
 
-Config ~/agents/board-sync/config.json (uses the gh wrapper):
-  owner           GitHub organization that owns the project (required)
+Config ~/agents/board-sync/config.json, or $BOARD_SYNC_DIR/config.json for a second board (uses the gh wrapper):
+  owner           GitHub organization or user that owns the project (required)
   project         project number (required)
   repo            "ORG/REPO" whose PRs and issues the board tracks (required)
   qa_acceptances  QA certificate file; default ~/agents/board-sync/qa-acceptances.json (absent = no acceptances)
@@ -33,8 +33,9 @@ import sys
 
 H = os.path.expanduser("~")
 GH = f"{H}/.local/bin/gh"
-CFG = f"{H}/agents/board-sync/config.json"
-REGISTRY = f"{H}/agents/board-sync/qa-acceptances.json"  # not beside the script: the installer replaces that folder
+BASE = os.environ.get("BOARD_SYNC_DIR") or f"{H}/agents/board-sync"  # one folder per board when several run
+CFG = f"{BASE}/config.json"
+REGISTRY = f"{BASE}/qa-acceptances.json"  # not beside the script: the installer replaces that folder
 LANES = {"backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress", "in_review": "In Review",
          "qa_review": "QA Review", "approval": "Awaiting Human Approval", "done": "Done"}  # role -> board name
 auto = lambda: {""} | {v for k, v in LANES.items() if k != "done"}
@@ -51,7 +52,7 @@ CONN = {"labels": "labels(first:100%s){%s nodes{name}}",
             "closedByPullRequestsReferences(first:100,includeClosedPrs:true%s){%s nodes{number repository{nameWithOwner}}}"}
 OWNER_OF = {"labels": "PullRequest", "closingIssuesReferences": "PullRequest", "closedByPullRequestsReferences": "Issue"}
 first = lambda c: CONN[c] % ("", PAGE)
-ITEMS_Q = f"""query Items($owner:String!,$num:Int!,$after:String){{organization(login:$owner){{projectV2(number:$num){{id
+ITEMS_Q = f"""query Items($owner:String!,$num:Int!,$after:String){{repositoryOwner(login:$owner){{... on ProjectV2Owner{{projectV2(number:$num){{id
  field(name:"Status"){{... on ProjectV2SingleSelectField{{id options{{id name}}}}}}
  items(first:100,after:$after){{{PAGE} nodes{{id isArchived
   status:fieldValueByName(name:"Status"){{... on ProjectV2ItemFieldSingleSelectValue{{name}}}}
@@ -60,7 +61,7 @@ ITEMS_Q = f"""query Items($owner:String!,$num:Int!,$after:String){{organization(
   content{{__typename
    ... on PullRequest{{id number state merged isDraft headRefOid baseRefName baseRefOid repository{{nameWithOwner}}
     {first("labels")} {first("closingIssuesReferences")}}}
-   ... on Issue{{id number state repository{{nameWithOwner}} {first("closedByPullRequestsReferences")}}}}}}}}}}}}}}}"""
+   ... on Issue{{id number state repository{{nameWithOwner}} {first("closedByPullRequestsReferences")}}}}}}}}}}}}}}}}}"""
 NESTED_Q = "query Nested($id:ID!,$after:String){node(id:$id){... on %s{%s}}}"
 REVIEWS_Q = f"""query Reviews($owner:String!,$name:String!,$num:Int!,$after:String){{repository(owner:$owner,name:$name){{
  pullRequest(number:$num){{reviews(first:100,after:$after){{{PAGE} nodes{{id databaseId state body url submittedAt commit{{oid}}}}}}}}}}}}"""
@@ -202,7 +203,7 @@ def norm_item(api, n):
 
 def collect(api, owner, num):
     def page(after):
-        p = (api.gql(ITEMS_Q, owner=owner, num=num, after=after).get("organization") or {}).get("projectV2")
+        p = (api.gql(ITEMS_Q, owner=owner, num=num, after=after).get("repositoryOwner") or {}).get("projectV2")
         need(isinstance(p, dict), f"project {owner}/{num} not found")
         return p
     proj = page(None)
@@ -509,7 +510,7 @@ def selftest():
             calls.append(args)
             if not read_only(args):
                 return ""  # a write: the assertions below make sure none happen
-            return raw or json.dumps({"data": {"organization": {"projectV2": {"id": "P", "items": items_conn,
+            return raw or json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "P", "items": items_conn,
                                       "field": {"id": "F", "options": [{"id": "o1", "name": "In Progress"}]}}}}})
         return run
     cfg, nofile = {"owner": "o", "project": 1, "repo": "o/r"}, example + ".absent"

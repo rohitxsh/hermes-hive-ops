@@ -6,7 +6,7 @@ the GitHub project is the team's dashboard. No model calls; uses the gh wrapper.
   kanban-github sync         create missing issues, keep title, assignees, labels, week milestone and project Status in step
   kanban-github --selftest
 
-Config ~/agents/kanban-github/config.json:
+Config ~/agents/kanban-github/config.json (or $KANBAN_GITHUB_DIR/config.json for another repo/board):
   repo, owner, project            GitHub repo ("ORG/REPO"), project owner and number
   people_from                     a config with "people" (aliases + github logins, optional "display" name for the board), e.g. ~/agents/inbox/config.json
   role_github, role_labels        per Kanban assignee profile: fallback GitHub assignees, labels
@@ -37,7 +37,7 @@ import sys
 import time
 
 H = os.path.expanduser("~")
-D = f"{H}/agents/kanban-github"
+D = os.environ.get("KANBAN_GITHUB_DIR") or f"{H}/agents/kanban-github"  # one folder per repo/board when several run
 GH = f"{H}/.local/bin/gh"
 STATUS = {"todo": "Backlog", "ready": "Ready", "running": "In Progress", "review": "In Review", "triage": "Blocked"}
 CODE_LABELS = {"GO-LIVE": "go-live", "POST-LAUNCH": "post-launch"}  # title code -> issue label
