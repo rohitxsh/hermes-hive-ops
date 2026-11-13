@@ -29,7 +29,7 @@ def _left(windows, q):
     return ", ".join(f"{w['label']} {w['used']:.0f}% used ({max(0.0, 100 - w['used']):.0f}% left)" for w in windows) or "no limits reported"
 
 
-def alert_line(providers, getu, auto, q):
+def alert_line(providers, getu, auto, q, paid=False):
     if not providers:
         return None
     first = q.provider_name(providers[0])
@@ -53,9 +53,12 @@ def alert_line(providers, getu, auto, q):
     w1 = getu(providers[1])
     if q.used_up(w1):
         nxt = q.provider_name(providers[2]) if len(providers) > 2 else "nothing"
-        return msg + f" {second} is used up too ({q.describe(w1)}); replies come from {nxt} and scheduled work is paused."
+        work = "continues on API credits" if paid and nxt != "nothing" else "is paused"
+        return msg + f" {second} is used up too ({q.describe(w1)}); replies come from {nxt} and scheduled work {work}."
     msg += f" Replies now come from {second}: {_left(w1, q)}."
-    if auto:
+    if paid and any(p in q.PAID_API for p in providers[2:]):
+        msg += " After that, pay-per-use API credits take over."
+    elif auto:
         msg += f" {q.pauser().capitalize()} at {q.AUTO_CAP:.0f}% of {second}'s 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit."
     return msg
 
@@ -69,9 +72,9 @@ def _profile_state():
         if hit and time.monotonic() - hit[0] < CACHE_S:
             return hit[1]
     try:
-        state = (q.chain(home), q.caps(home))
+        state = (q.chain(home), q.caps(home), q.paid_ok(home))
     except Exception:
-        state = ([], False)
+        state = ([], False, False)
     with _lock:
         _memo[home] = (time.monotonic(), state)
     return state
@@ -92,8 +95,8 @@ def transform_llm_output(response_text="", **kwargs):
         return None
     try:
         import quota_lib as q
-        providers, auto = _profile_state()
-        line = alert_line(providers, lambda p: q.usage(p, allow_fetch=False), auto, q)
+        providers, auto, paid = _profile_state()
+        line = alert_line(providers, lambda p: q.usage(p, allow_fetch=False), auto, q, paid)
     except Exception as exc:
         log.warning("quota-alert: %s", exc)
         return None

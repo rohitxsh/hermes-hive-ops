@@ -29,4 +29,9 @@ assert "weekly limit reached" in line and "Claude: 5-hour 40% used (60% left)" i
 line = qa.alert_line(c, g({"openai-codex": week_out, "claude": [W("5-hour", 100, None)]}), False, q)
 assert "used up too" in line and "Nous" in line, line
 assert qa.alert_line(c, g({}), False, q) is None
+pc = ["openai-codex", "claude-subscription-directsdk-experimental", "openai-api", "anthropic"]
+line = qa.alert_line(pc, g({"openai-codex": week_out, "claude": claude}), True, q, paid=True)
+assert "API credits take over" in line and "pauses" not in line, line
+line = qa.alert_line(pc, g({"openai-codex": week_out, "claude": [W("5-hour", 100, None)]}), True, q, paid=True)
+assert "continues on API credits" in line, line
 print("quota-alert selftest ok")

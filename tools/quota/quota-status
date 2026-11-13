@@ -52,7 +52,9 @@ def main():
     ok, why = q.run_allowed(providers, capped, getu, cp, q.paid_ok(home))
     wrap = q.wrap_up(providers, capped, getu, cp, q.paid_ok(home)) if ok else ""
     print("Scheduled work: " + (f"wrapping up ({wrap})" if wrap else "running" if ok else f"paused ({why})"))
-    if capped:
+    if q.paid_ok(home) and any(p in q.PAID_API for p in providers):
+        print("Paid API fallback on: once the subscriptions are used up, scheduled work continues on the API keys (spend limits are set on the keys).")
+    elif capped:
         print(f"{'Quota caps (auto mode on or off)' if q.ALL_MODES else 'Auto-mode caps'}: scheduled work stops at {q.AUTO_CAP:.0f}% of the second provider's 5-hour window or {q.WEEKLY_CAP:.0f}% of its weekly limit; "
               "Claude Code runs share the Claude limit.")
         if cp:
