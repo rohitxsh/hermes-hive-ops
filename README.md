@@ -13,7 +13,7 @@ git clone https://github.com/rohitxsh/hermes-hive-ops && cd hermes-hive-ops
 cp setup/settings.env.example setup/settings.env      # fill it in (nothing secret)
 setup/install.sh --dry-run                            # see what it would do
 setup/install.sh                                      # bin tools plugins patches skills third-party config soul health jobs brain
-sudo setup/services/install-services.sh "$USER" hermes   # optional: run the gateway as a systemd service
+sudo setup/services/install-services.sh "$USER" hermes   # optional: run the gateway as a systemd service; library-update restarts (needrestart) then wait for idle
 setup/devtools/install-devtools.sh claude codex gh rtk context7   # optional: coding CLIs (+ RTK, Context7) for coding agents
 hermes-restart-idle                                   # restart the gateway when no turn is running
 ```

@@ -16,4 +16,9 @@ for s in $SVCS; do
   fi
 done
 systemctl daemon-reload
+# unattended upgrades run needrestart, which would restart Hermes under running agents: route it through the idle helper
+if [ -d /etc/needrestart/restart.d ]; then
+  sed "s#__HOME__#$HOMEDIR#g" "$HERE/needrestart-hermes.hook" > /etc/needrestart/restart.d/agent-worker@hermes.service
+  chmod 755 /etc/needrestart/restart.d/agent-worker@hermes.service
+fi
 for s in $SVCS; do systemctl enable --now "agent-worker@$s" && echo "agent-worker@$s: $(systemctl is-active agent-worker@$s)"; done

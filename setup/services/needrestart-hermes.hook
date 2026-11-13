@@ -1,0 +1,9 @@
+#!/bin/sh
+# needrestart restart.d hook for agent-worker@hermes: after a library update, queue the idle-safe restart instead of
+# restarting Hermes under running agents (a direct restart books running Kanban tasks crashed).
+set -eu
+if /usr/bin/systemctl is-active --quiet hermes-restart-idle-needrestart.service; then
+    echo 'Hermes library refresh already queued through the idle-safe helper.'
+    exit 0
+fi
+exec /usr/bin/systemd-run --unit hermes-restart-idle-needrestart --collect __HOME__/.local/bin/hermes-restart-idle
