@@ -6,6 +6,7 @@ No model calls.
   inbox digest               post each person's full list in their post (daily cron), mentioning them once
   inbox new                  post only items that became theirs since the last run (cron every 10 min; silent if none)
   inbox show [KEY]           print what would be posted, without posting
+  inbox note KEY... < FILE   post a one-off note (stdin) in these people's posts, mentioning each once
   inbox --selftest
 
 Config ~/agents/inbox/config.json:
@@ -256,6 +257,16 @@ def main(args):
     cmd = args[0] if args else "show"
     if cmd == "setup":
         return setup(conf)
+    if cmd == "note":
+        text = sys.stdin.read().strip()
+        who = [p for p in conf["people"] if p["key"] in args[1:] and p.get("post")]
+        if not text or not who or len(who) != len(set(args[1:])):
+            sys.exit("inbox note: needs the note on stdin and known people keys that have a post")
+        tok = token()
+        for p in who:
+            post(tok, p, f"<@{p['discord']}> {text}")
+            print(f"noted in {p['key']}'s inbox")
+        return
     items = gather(conf)
     if cmd == "show":
         for p in conf["people"]:
