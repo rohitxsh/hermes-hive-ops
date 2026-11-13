@@ -1,0 +1,17 @@
+#!/bin/bash
+# android-emulator up|down|status: a headless Android 14 phone (AVD agents_api34) for Maestro/adb tests. One at a time.
+export PATH=$HOME/.local/bin:$PATH
+SDK=$HOME/.local/opt/android-sdk; [ -d "$HOME/Android/Sdk" ] && SDK=$HOME/Android/Sdk
+booted(){ [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+case "${1:-status}" in
+  up)
+    booted && { echo "already running"; exit 0; }
+    nohup "$SDK/emulator/emulator" -avd agents_api34 -no-window -no-audio -no-boot-anim -no-snapshot-save \
+      -gpu swiftshader_indirect -memory 2048 >"${TMPDIR:-/tmp}/android-emulator.log" 2>&1 &
+    adb wait-for-device >/dev/null 2>&1
+    for i in $(seq 1 120); do booted && { echo "booted"; exit 0; }; sleep 3; done
+    echo "did not boot in 6 minutes; see ${TMPDIR:-/tmp}/android-emulator.log"; exit 1 ;;
+  down) adb emu kill >/dev/null 2>&1; sleep 3; pkill -f "emulator.*agents_api34" 2>/dev/null; echo "stopped" ;;
+  status) booted && echo "running" || echo "not running" ;;
+  *) echo "usage: android-emulator up|down|status"; exit 2 ;;
+esac

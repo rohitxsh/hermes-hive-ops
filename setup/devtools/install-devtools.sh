@@ -1,6 +1,6 @@
 #!/bin/bash
 # Developer tools for coding agents, each verified against its published checksum where one exists:
-#   setup/devtools/install-devtools.sh [claude] [codex] [gh] [flutter] [supabase] [rtk] [context7] [presentations]
+#   setup/devtools/install-devtools.sh [claude] [codex] [gh] [flutter] [supabase] [rtk] [context7] [presentations] [android-test] [k6]
 # Installs into ~/.local/opt with links in ~/.local/bin; no sudo. Sign in to each tool yourself afterwards.
 set -uo pipefail
 OPT=$HOME/.local/opt; BIN=$HOME/.local/bin; mkdir -p "$OPT" "$BIN"
@@ -27,6 +27,32 @@ if want presentations; then echo "== Presentations (Marp CLI; LibreOffice and po
     'export CHROME_PATH' 'exec "$HOME/.local/lib/node_modules/.bin/marp" "$@"' > "$BIN/marp"; chmod 755 "$BIN/marp"
   echo "  $($BIN/marp --version 2>/dev/null | head -1)"
   command -v soffice >/dev/null && command -v pdftoppm >/dev/null || echo "  for slide rendering also run: sudo apt-get install --no-install-recommends libreoffice-impress poppler-utils fonts-liberation fonts-dejavu-core fonts-noto-core"
+fi
+if want android-test; then echo "== Android test phone (SDK, emulator, AVD agents_api34) + Maestro"
+  java -version 2>&1 | grep -qE 'version "(1[7-9]|2[0-9])' || echo "  needs Java 17+: sudo apt-get install --no-install-recommends openjdk-17-jdk-headless"
+  SDK=$OPT/android-sdk
+  if [ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+    url=$(curl -fsSL https://developer.android.com/studio | grep -oE 'https://dl.google.com/android/repository/commandlinetools-linux-[0-9]+_latest.zip' | head -1)
+    curl -fsSL -o clt.zip "$url" && unzip -q clt.zip && mkdir -p "$SDK/cmdline-tools" && rm -rf "$SDK/cmdline-tools/latest" && mv cmdline-tools "$SDK/cmdline-tools/latest"
+  fi
+  yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null 2>&1
+  "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" platform-tools emulator "system-images;android-34;google_apis;x86_64" >/dev/null 2>&1
+  ln -sf "$SDK/platform-tools/adb" "$BIN/adb"
+  "$SDK/cmdline-tools/latest/bin/avdmanager" list avd 2>/dev/null | grep -q "Name: agents_api34" || echo no |     "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n agents_api34 -k "system-images;android-34;google_apis;x86_64" -d pixel_6 >/dev/null 2>&1
+  MV=$(latest mobile-dev-inc/maestro)   # tags look like cli-2.12.1
+  curl -fsSL -o maestro.zip "https://github.com/mobile-dev-inc/maestro/releases/download/$MV/maestro.zip" \
+    && curl -fsSL -o maestro.sums "https://github.com/mobile-dev-inc/maestro/releases/download/$MV/checksums_sha256.txt" \
+    && grep " maestro.zip$" maestro.sums | sha256sum -c - >/dev/null && unzip -q maestro.zip \
+    && rm -rf "$OPT/maestro" && mv maestro "$OPT/maestro" && ln -sf "$OPT/maestro/bin/maestro" "$BIN/maestro" \
+    || echo "  maestro download or checksum failed; not installed"
+  [ -e /dev/kvm ] || echo "  no /dev/kvm: the emulator needs hardware virtualisation (enable nested virtualisation for this VM)"
+  echo "  maestro $(MAESTRO_CLI_NO_ANALYTICS=1 $BIN/maestro --version 2>/dev/null | tail -1); start a phone with: android-emulator up"
+fi
+if want k6; then echo "== k6 (load testing)"
+  KV=$(latest grafana/k6); f="k6-v$KV-linux-amd64.tar.gz"
+  curl -fsSL -o "$f" "https://github.com/grafana/k6/releases/download/v$KV/$f" && curl -fsSL -o k6.sums "https://github.com/grafana/k6/releases/download/v$KV/k6-v$KV-checksums.txt"
+  grep " $f\$" k6.sums | sha256sum -c - >/dev/null && tar -xzf "$f" && mkdir -p "$OPT/k6" && mv "k6-v$KV-linux-amd64/k6" "$OPT/k6/k6" && ln -sf "$OPT/k6/k6" "$BIN/k6"
+  echo "  $($BIN/k6 version 2>/dev/null | head -1)"
 fi
 if want gh; then echo "== GitHub CLI"
   GV=$(latest cli/cli)
