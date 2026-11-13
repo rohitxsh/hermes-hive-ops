@@ -6,7 +6,9 @@
   - this machine's admin-log entries for the day (setup changes on external platforms, rules, tools).
 The agent writing the update turns these into plain sentences; it must not invent anything that isn't listed.
 
-  day-summary --repo ORG/REPO [--since YYYY-MM-DD] [--admin-log ~/agents/ADMIN-CHANGES.md] [--agent-logins a,b]
+  day-summary --repo ORG/REPO [--since ISO_DATE_OR_DATETIME] [--admin-log ~/agents/ADMIN-CHANGES.md] [--agent-logins a,b]
+Dates and unzoned datetimes use local time; aware datetimes retain their instant.
+GitHub and Kanban use that same instant; admin-log entries use its local date.
   day-summary --selftest"""
 import argparse
 import datetime
@@ -79,15 +81,22 @@ def main(argv):
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
-    day = a.since or datetime.date.today().isoformat()
-    since_ts = datetime.datetime.fromisoformat(day).timestamp()
+    value = a.since or datetime.date.today().isoformat()
+    try:
+        local_since = datetime.datetime.fromisoformat(value).astimezone()
+    except ValueError:
+        ap.error("--since must be an ISO date or datetime (timezone optional; omitted means local)")
+    day = local_since.date().isoformat()
+    since_ts = local_since.timestamp()
+    since_utc = local_since.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     agents = {x for x in a.agent_logins.split(",") if x}
-    lines = [f"Facts since {day} 00:00 (local)"]
+    lines = [f"Facts since {local_since.isoformat()} (local)"]
     if a.repo:
-        lines += github(a.repo, day, agents)
+        lines += github(a.repo, since_utc, agents)
     lines += kanban(since_ts)
     if os.path.exists(a.admin_log):
-        ent = admin_entries(open(a.admin_log, encoding="utf-8", errors="replace").read(), day)
+        with open(a.admin_log, encoding="utf-8", errors="replace") as log:
+            ent = admin_entries(log.read(), day)
         lines.append(f"Setup and admin changes today: {len(ent)}")
         lines += [f"- {e}" for e in ent]
     print("\n".join(lines))
