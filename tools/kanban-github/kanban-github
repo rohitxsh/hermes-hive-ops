@@ -197,7 +197,7 @@ def cards(conf):
         reason = c.execute("select payload from task_events where task_id=? and kind in ('blocked','scheduled') "
                            "order by created_at desc limit 1", (tid,)).fetchone()
         try:
-            reason = (json.loads(reason[0] or "{}") or {}).get("reason", "") if reason else ""
+            reason = (json.loads(reason[0] or "{}") or {}).get("reason") or "" if reason else ""  # a park can carry reason None
         except ValueError:
             reason = ""
         notes = [b for (b,) in c.execute("select body from task_comments where task_id=? and author != 'github'", (tid,))]
