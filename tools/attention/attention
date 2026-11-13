@@ -497,6 +497,24 @@ def pr_verdict(d, since, owner, agents=(), gate_labels=("human-signoff",)):
     return False, "waiting"
 
 
+UNTIL = re.compile(r"SCHEDULED_UNTIL=(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?(?:Z|[+-]\d{2}:?\d{2})?)")
+
+
+def until_due(reason, now=None):
+    """The SCHEDULED_UNTIL=<ISO time> an agent wrote in its park reason, if that time has passed (else None).
+    Hermes has no timed wake, so without this a card parked "until" a time stayed parked forever."""
+    m = UNTIL.search(reason or "")
+    if not m:
+        return None
+    try:
+        when = dt.datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    when = when if when.tzinfo else when.astimezone()  # no offset: local time
+    now = now or dt.datetime.now(dt.timezone.utc)
+    return m.group(1) if now >= when else None
+
+
 def pr_resume():
     db = f"{H}/.hermes/kanban.db"
     if not os.path.exists(db):
@@ -509,6 +527,13 @@ def pr_resume():
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
     for t in kanban_waiting():
         if done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD"):  # parked on purpose
+            continue
+        due = until_due(t["reason"])
+        if due and used.get(t["id"]) != f"until {due}":
+            rc, out = resume_card(t, f"Resumed automatically: it was parked until {due}, which has passed. Carry on.")
+            if rc == 0:
+                done[t["id"]], used[t["id"]] = t["since"], f"until {due}"
+                print(f"⏰ {t['id']} ({t['who']}) resumed: parked until {due}")
             continue
         # only the PR the wait names (reason or title): a PR merely mentioned in the body or comments woke unrelated cards
         prs = pr_refs(" ".join([t["title"] or "", t["reason"] or ""]), t["reason"],
@@ -658,6 +683,10 @@ def renewal_cmd(args):
 
 
 def selftest():
+    past = dt.datetime(2026, 11, 14, 12, tzinfo=dt.timezone.utc)
+    assert until_due("waiting; SCHEDULED_UNTIL=2026-11-13T23:11:00+05:30 then resume", past) == "2026-11-13T23:11:00+05:30"
+    assert until_due("SCHEDULED_UNTIL=2026-12-07T09:30:00+05:30", past) is None
+    assert until_due("no time here", past) is None and until_due("SCHEDULED_UNTIL=garbage", past) is None
     global H
     assert pr_refs("see https://github.com/o/r/pull/7", "waiting on PR #38 (issue #37)", "o/r") == [("o/r", "38"), ("o/r", "7")]
     assert pr_refs("PR #9 in a comment", "", "o/r") == [] and pr_refs("", "PR #38", "") == []
