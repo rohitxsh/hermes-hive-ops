@@ -6,11 +6,16 @@ booted(){ [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" =
 case "${1:-status}" in
   up)
     booted && { echo "already running"; exit 0; }
-    nohup "$SDK/emulator/emulator" -avd agents_api34 -no-window -no-audio -no-boot-anim -no-snapshot-save \
-      -gpu swiftshader_indirect -memory 2048 >"${TMPDIR:-/tmp}/android-emulator.log" 2>&1 &
-    adb wait-for-device >/dev/null 2>&1
-    for i in $(seq 1 120); do booted && { echo "booted"; exit 0; }; sleep 3; done
-    echo "did not boot in 6 minutes; see ${TMPDIR:-/tmp}/android-emulator.log"; exit 1 ;;
+    log="${TMPDIR:-/tmp}/android-emulator.log"
+    cmd="'$SDK/emulator/emulator' -avd agents_api34 -no-window -no-audio -no-boot-anim -no-snapshot-save -gpu swiftshader_indirect -memory 2048"
+    # /dev/kvm belongs to group kvm; a process started before the user joined it (the gateway) gets the group via sg
+    if id -nG | grep -qw kvm; then nohup sh -c "$cmd" >"$log" 2>&1 & else nohup sg kvm -c "$cmd" >"$log" 2>&1 & fi
+    for i in $(seq 1 120); do
+      booted && { echo "booted"; exit 0; }
+      [ "$i" -gt 5 ] && ! pgrep -f "emulator.*agents_api34" >/dev/null && { echo "emulator exited; see $log"; tail -3 "$log"; exit 1; }
+      sleep 3
+    done
+    echo "did not boot in 6 minutes; see $log"; exit 1 ;;
   down) adb emu kill >/dev/null 2>&1; sleep 3; pkill -f "emulator.*agents_api34" 2>/dev/null; echo "stopped" ;;
   status) booted && echo "running" || echo "not running" ;;
   *) echo "usage: android-emulator up|down|status"; exit 2 ;;
