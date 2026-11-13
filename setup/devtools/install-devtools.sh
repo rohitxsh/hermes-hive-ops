@@ -1,6 +1,6 @@
 #!/bin/bash
 # Developer tools for coding agents, each verified against its published checksum where one exists:
-#   setup/devtools/install-devtools.sh [claude] [codex] [gh] [flutter] [supabase] [rtk] [context7]
+#   setup/devtools/install-devtools.sh [claude] [codex] [gh] [flutter] [supabase] [rtk] [context7] [presentations]
 # Installs into ~/.local/opt with links in ~/.local/bin; no sudo. Sign in to each tool yourself afterwards.
 set -uo pipefail
 OPT=$HOME/.local/opt; BIN=$HOME/.local/bin; mkdir -p "$OPT" "$BIN"
@@ -20,6 +20,14 @@ if want codex; then echo "== Codex CLI"
     chmod 755 "$BIN/codex"
   fi
   echo "  codex $($BIN/codex --version 2>/dev/null)"; fi
+if want presentations; then echo "== Presentations (Marp CLI; LibreOffice and poppler render slides for checking)"
+  NPM_CONFIG_PREFIX=$HOME/.local npm install -g --no-audit --no-fund @marp-team/marp-cli@4 >/dev/null 2>&1
+  # Marp renders with Chrome: point it at Hermes's own Chromium
+  printf '%s\n' '#!/bin/sh' 'CHROME_PATH=$(ls -d "$HOME"/.hermes/tools/chromium-*/chrome-linux64/chrome 2>/dev/null | sort -V | tail -1)' \
+    'export CHROME_PATH' 'exec "$HOME/.local/lib/node_modules/.bin/marp" "$@"' > "$BIN/marp"; chmod 755 "$BIN/marp"
+  echo "  $($BIN/marp --version 2>/dev/null | head -1)"
+  command -v soffice >/dev/null && command -v pdftoppm >/dev/null || echo "  for slide rendering also run: sudo apt-get install --no-install-recommends libreoffice-impress poppler-utils fonts-liberation fonts-dejavu-core fonts-noto-core"
+fi
 if want gh; then echo "== GitHub CLI"
   GV=$(latest cli/cli)
   curl -fsSL -o gh.tgz "https://github.com/cli/cli/releases/download/v$GV/gh_${GV}_linux_amd64.tar.gz"

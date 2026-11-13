@@ -14,7 +14,7 @@ cp setup/settings.env.example setup/settings.env      # fill it in (nothing secr
 setup/install.sh --dry-run                            # see what it would do
 setup/install.sh                                      # bin tools plugins patches skills third-party config soul health jobs brain
 sudo setup/services/install-services.sh "$USER" hermes   # optional: run the gateway as a systemd service; library-update restarts (needrestart) then wait for idle
-setup/devtools/install-devtools.sh claude codex gh rtk context7   # optional: coding CLIs (+ RTK, Context7) for coding agents
+setup/devtools/install-devtools.sh claude codex gh rtk context7 presentations   # optional: coding CLIs (+ RTK, Context7), Marp for decks
 hermes-restart-idle                                   # restart the gateway when no turn is running
 ```
 
@@ -105,7 +105,7 @@ wrapper), `report-issue`, `vault-fill`.
 
 ### `skills/`
 `claude-code-tickets` (coding work through Claude Code, Codex as fallback), `consult-assistant`, `vault-logins`,
-`markitdown`, `interactive-visuals`, `feeds` (check feeds before web-searching for releases and news; keep the subscriptions tidy).
+`markitdown`, `interactive-visuals`, `feeds` (check feeds before web-searching for releases and news; keep the subscriptions tidy), `presentations` (plan the story, build with python-pptx via Hermes's `microsoft-office` skill or Marp, render every slide with LibreOffice/poppler and check it, deliver .pptx and .pdf; install the tools with `install-devtools.sh presentations`).
 
 Adapted from Google's [elephant-goldfish-model](https://github.com/google/elephant-goldfish-model) (Apache-2.0, license
 in each folder): `independent-review` (fresh read-only subagents review a contract or PRD before work starts:
