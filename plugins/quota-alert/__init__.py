@@ -46,7 +46,7 @@ def alert_line(providers, getu, auto, q, paid=False):
             for w in high) + "."
     resets = [w["resets_at"] for w in gone if w.get("resets_at")]
     back = f" (back {q.local_time(max(resets))})" if resets else ""
-    msg = f"⚠️ Quota: {first} {' and '.join(w['label'] for w in gone)} limit reached{back}."
+    msg = f"⚠️ Quota: {first} {' and '.join(w['label'] for w in gone)} limit reached{back}. Check whether a limit reset is available."
     if len(providers) < 2:
         return msg
     second = q.provider_name(providers[1])

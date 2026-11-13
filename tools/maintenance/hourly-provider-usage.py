@@ -69,6 +69,9 @@ def main():
             labels = [("limit", "limit")]
         for title, label in labels:
             print(f"- **{name} {title}:** {metric(windows, label, now)}")
+    full = [name for name, windows in readings if any((w.get("used") or 0) >= 100 for w in windows or [])]
+    if full:  # a reset can sometimes be claimed on the provider's account page before the scheduled one
+        print(f"- ⚠️ **{' and '.join(full)} at 100%:** check whether a limit reset is available for the account.")
 
 
 if __name__ == "__main__":

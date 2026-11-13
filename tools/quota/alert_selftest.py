@@ -25,6 +25,7 @@ def g(table):
 assert qa.alert_line(c, g({"openai-codex": fine}), False, q) is None
 assert "5-hour 92% used" in qa.alert_line(c, g({"openai-codex": hot}), False, q)
 line = qa.alert_line(c, g({"openai-codex": week_out, "claude": claude}), True, q)
+assert "limit reset is available" in line
 assert "weekly limit reached" in line and "Claude: 5-hour 40% used (60% left)" in line and "Auto mode pauses at 70%" in line, line
 line = qa.alert_line(c, g({"openai-codex": week_out, "claude": [W("5-hour", 100, None)]}), False, q)
 assert "used up too" in line and "Nous" in line, line
