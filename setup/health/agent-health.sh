@@ -69,6 +69,13 @@ for s in issues/issue-digest.py:issue-digest.py issues/issue-pending.sh:issue-pe
   a="$HOME/agents/src/${s%%:*}"; b="$HOME/.hermes/scripts/${s##*:}"
   [ -f "$a" ] && [ -f "$b" ] && ! cmp -s "$a" "$b" && p+=("scheduled copy ~/.hermes/scripts/${s##*:} differs from ~/agents/src/${s%%:*}: diff them; if the copy has a fix the source lacks, put it in the source and add a 'kit pending:' line to HANDOFF.md; then install -m 755 the source over the copy")
 done
+# command copies: a tool copied (not linked) into ~/.local/bin keeps old code when only ~/agents/src is updated
+for b in "$HOME"/.local/bin/*; do
+  [ -f "$b" ] && [ ! -L "$b" ] || continue
+  for s in "$HOME"/agents/src/*/"$(basename "$b")"; do
+    [ -f "$s" ] && ! cmp -s "$b" "$s" && p+=("command ~/.local/bin/$(basename "$b") differs from ~/${s#"$HOME"/}: diff them; if the copy has a fix the source lacks, put it in the source first; then install -m 755 the source over the copy")
+  done
+done
 # disk space
 use=$(df --output=pcent "$HOME" | tail -1 | tr -dc 0-9); [ "${use:-0}" -ge 85 ] && p+=("home filesystem is ${use}% full")
 # second brain
