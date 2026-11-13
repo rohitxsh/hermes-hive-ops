@@ -206,8 +206,42 @@ def cards(conf):
     return out
 
 
+# Network blips (2026-11-13): retry a gh call only when it is safe to repeat.
+# PRE_SEND errors mean the request never reached GitHub, so any call may be retried;
+# other transient errors are retried only for read-only calls (a write may already have landed).
+GH_PRE_SEND = re.compile(r"dial tcp [^ ]+: (connect: |i/o timeout)|lookup [^ ]+ on [^ ]+: |TLS handshake timeout")
+GH_TRANSIENT = re.compile(r"connection reset by peer|unexpected EOF|i/o timeout|no route to host|connection refused"
+                          r"|Client\.Timeout|timeout awaiting response headers|HTTP 50[234]")
+GH_READ_VERBS = {("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list"), ("label", "list"),
+                 ("project", "view"), ("project", "field-list"), ("project", "item-list")}
+GH_RETRY_DELAYS = (5, 15)
+
+
+def gh_read_only(args):
+    if tuple(args[:2]) in GH_READ_VERBS:
+        return True
+    if not args or args[0] != "api":
+        return False
+    rest = list(args[1:])
+    if any(a in ("-X", "--method", "--input") or a.startswith(("--method=", "-X")) for a in rest):
+        return False
+    fields = [rest[i + 1] for i, a in enumerate(rest[:-1]) if a in ("-f", "-F", "--field", "--raw-field")]
+    if rest and rest[0] == "graphql":
+        q = [f for f in fields if f.startswith("query=")]
+        return len(q) == 1 and re.match(r"query=\s*(query\b|\{)", q[0]) is not None
+    return not fields
+
+
+def gh_retryable(args, err):
+    return bool(GH_PRE_SEND.search(err)) or (bool(GH_TRANSIENT.search(err)) and gh_read_only(args))
+
+
 def gh(*args, check=True):
-    r = subprocess.run([GH, *args], capture_output=True, text=True, timeout=90)
+    for delay in (*GH_RETRY_DELAYS, None):
+        r = subprocess.run([GH, *args], capture_output=True, text=True, timeout=90)
+        if r.returncode == 0 or delay is None or not gh_retryable(args, (r.stderr or r.stdout)):
+            break
+        time.sleep(delay)
     if check and r.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:300]}")
     return r.stdout
