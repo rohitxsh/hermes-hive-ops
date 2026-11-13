@@ -112,12 +112,38 @@ def known_targets():
     return ids
 
 
+def stale_deliveries(jobs, now):
+    """Delivery one-shots that ran over a day ago: a --no-wait send (or a timed-out wait) never removes its job."""
+    out = []
+    for j in jobs:
+        if not str(j.get("name") or "").startswith("delivery ") or not j.get("last_run_at"):
+            continue
+        try:
+            ran = dt.datetime.fromisoformat(str(j["last_run_at"])).timestamp()
+        except ValueError:
+            continue
+        if now - ran > 86400:
+            out.append(j)
+    return out
+
+
 def cleanup_old():
     cutoff = time.time() - 14 * 86400
     for d in os.listdir(SPOOL) if os.path.isdir(SPOOL) else []:
         p = os.path.join(SPOOL, d)
         if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
             shutil.rmtree(p, ignore_errors=True)
+    try:
+        d = json.load(open(f"{HOME}/cron/jobs.json"))
+    except (OSError, ValueError):
+        return
+    env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HERMES_PROFILE")}
+    for j in stale_deliveries(d["jobs"] if isinstance(d, dict) else d, time.time()):
+        r = subprocess.run([HERMES, "cron", "remove", j["id"]], capture_output=True, timeout=60,
+                           stdin=subprocess.DEVNULL, env=env)
+        script = f"{HOME}/scripts/delivery-{str(j['name']).split()[1]}.sh"
+        if r.returncode == 0 and os.path.exists(script):
+            os.remove(script)
 
 
 def main():
@@ -202,6 +228,11 @@ def main():
 
 
 def selftest():
+    now = dt.datetime(2026, 11, 13, 12, tzinfo=dt.timezone.utc).timestamp()
+    jobs = [{"name": "delivery 20261111-0101-aa from x", "last_run_at": "2026-11-11T01:02:00+00:00"},
+            {"name": "delivery 20261113-1100-bb from x", "last_run_at": "2026-11-13T11:00:00+00:00"},
+            {"name": "delivery 20261113-1159-cc from x"}, {"name": "quota guard", "last_run_at": "2026-11-01T00:00:00+00:00"}]
+    assert [j["name"] for j in stale_deliveries(jobs, now)] == ["delivery 20261111-0101-aa from x"]
     t = script_text("/x/message.txt", ["/x/a.md", "/x/b.png"])
     assert t.splitlines() == ["#!/bin/sh", "cat '/x/message.txt'", "echo", "echo 'MEDIA:/x/a.md'", "echo 'MEDIA:/x/b.png'"], t
     print("selftest ok")
