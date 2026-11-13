@@ -24,7 +24,7 @@ if want presentations; then echo "== Presentations (Marp CLI; LibreOffice and po
   NPM_CONFIG_PREFIX=$HOME/.local npm install -g --no-audit --no-fund @marp-team/marp-cli@4 >/dev/null 2>&1
   # Marp renders with Chrome: point it at Hermes's own Chromium
   printf '%s\n' '#!/bin/sh' 'CHROME_PATH=$(ls -d "$HOME"/.hermes/tools/chromium-*/chrome-linux64/chrome 2>/dev/null | sort -V | tail -1)' \
-    'export CHROME_PATH' 'exec "$HOME/.local/lib/node_modules/.bin/marp" "$@"' > "$BIN/marp"; chmod 755 "$BIN/marp"
+    'export CHROME_PATH' 'exec node "$HOME/.local/lib/node_modules/@marp-team/marp-cli/marp-cli.js" "$@"' > "$BIN/marp"; chmod 755 "$BIN/marp"
   echo "  $($BIN/marp --version 2>/dev/null | head -1)"
   command -v soffice >/dev/null && command -v pdftoppm >/dev/null || echo "  for slide rendering also run: sudo apt-get install --no-install-recommends libreoffice-impress poppler-utils fonts-liberation fonts-dejavu-core fonts-noto-core"
 fi

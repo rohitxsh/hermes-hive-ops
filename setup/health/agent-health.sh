@@ -14,6 +14,9 @@ if systemctl list-unit-files 'agent-worker@.service' >/dev/null 2>&1 && systemct
   done
 fi
 # coding CLIs still logged in (the fallback coding CLI fails silently otherwise)
+for c in claude codex; do  # a link left dangling (an npm prune removed the package) used to skip the check silently
+  [ -L "$HOME/.local/bin/$c" ] && [ ! -e "$HOME/.local/bin/$c" ] && p+=("$c CLI link is broken (package removed?): reinstall it, e.g. setup/devtools/install-devtools.sh $c")
+done
 [ -x "$HOME/.local/bin/codex" ] && { "$HOME/.local/bin/codex" login status 2>&1 | grep -q "Logged in" || p+=("Codex CLI is not logged in: run codex login --device-auth"); }
 # local Hermes patches (a hermes update can drop them)
 for f in "$KIT_PATCHES"/*-apply.py; do

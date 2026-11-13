@@ -103,7 +103,7 @@ def candidates(db, now, diags=(), agents=None):
     for tid, status, kind, who, title, creator, last_ev, last_hb, payload, loop_held, open_parents in rows:
         age = 0 if last_ev is None else (now - last_ev) / 60
         try:
-            reason = (json.loads(payload or "{}") or {}).get("reason", "") if status in ("blocked", "triage", "scheduled") else ""
+            reason = (json.loads(payload or "{}") or {}).get("reason") or "" if status in ("blocked", "triage", "scheduled") else ""
         except ValueError:
             reason = ""
         why = None

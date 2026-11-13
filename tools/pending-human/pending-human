@@ -40,7 +40,7 @@ def waiting_cards(db, now):
         if kind in ("dependency", "transient") and status != "scheduled":
             continue   # a parked card keeps a stale block_kind from an earlier block; its reason says what it waits on
         try:
-            reason = (json.loads(payload or "{}") or {}).get("reason", "")
+            reason = (json.loads(payload or "{}") or {}).get("reason") or ""
         except ValueError:
             reason = ""
         out.append({"id": tid, "status": status, "assignee": who, "title": title, "kind": kind,
@@ -142,14 +142,17 @@ def selftest():
             insert into tasks values ('a', 'blocked', 'pm', 'needs a human', 'needs_input'),
               ('b', 'blocked', 'dev', 'waits on a card', 'dependency'), ('c', 'running', 'qa', 'busy', null),
               ('d', 'triage', 'dev', 'loop held', null), ('e', 'triage', 'dev', 'fresh triage', null),
-              ('f', 'scheduled', 'dev', 'parked', null), ('g', 'scheduled', 'dev', 'parked after a dependency block', 'dependency');
+              ('f', 'scheduled', 'dev', 'parked', null), ('g', 'scheduled', 'dev', 'parked after a dependency block', 'dependency'),
+              ('h', 'scheduled', 'dev', 'parked with a null reason', null);
             insert into task_events (task_id, kind, created_at, payload) values
               ('a', 'blocked', 100, '{"reason": "approve the PRD?"}'), ('d', 'block_loop_detected', 50, '{}'),
               ('e', 'created', 60, '{}'), ('f', 'scheduled', 70, '{"reason": "waiting on QA"}'),
-              ('g', 'scheduled', 80, '{"reason": "waiting on owner for PR #5"}');""")
+              ('g', 'scheduled', 80, '{"reason": "waiting on owner for PR #5"}'),
+              ('h', 'scheduled', 90, '{"reason": null}');""")
         c.commit(); c.close()
         got = {x["id"]: x for x in waiting_cards(db, 3700)}
-        assert set(got) == {"a", "d", "f", "g"}, got
+        assert set(got) == {"a", "d", "f", "g", "h"}, got
+        assert got["h"]["reason"] == ""   # kanban_schedule without a reason stores null; must not crash the inbox
         assert got["a"]["reason"] == "approve the PRD?" and got["a"]["waiting_hours"] == 1.0
     so = {"labels": [{"name": "human-signoff"}], "reviewDecision": "APPROVED", "headRefOid": "h2"}
     assert not needs_human(dict(so, approved_at_head=True))          # approved at its head: an agent merges it

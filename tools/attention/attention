@@ -166,7 +166,7 @@ def kanban_waiting():
             continue   # block_kind describes a block; a parked (scheduled) card keeps a stale one from an earlier block
         reason = ""
         try:
-            reason = (json.loads(payload or "{}") or {}).get("reason", "")
+            reason = (json.loads(payload or "{}") or {}).get("reason") or ""
         except ValueError:
             pass
         if reason in ("initial_status", "blocked"):  # placeholder reasons Hermes records at creation
