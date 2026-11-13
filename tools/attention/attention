@@ -536,7 +536,8 @@ def pr_resume():
                     print(f"🔓 {t['id']} ({t['who']}) resumed: {ci}")
             continue
         if approved and used.get(t["id"]) == why:
-            done[t["id"]] = t["since"]
+            # already woke the card for this exact approval: don't wake it again, but keep checking this park,
+            # so a later approval (a person's review after QA's label) still wakes it
             continue
         who = implementer(c, t["id"], t["who"])
         if who:   # supported handoff first, so the card resumes with the role that can act on the PR
