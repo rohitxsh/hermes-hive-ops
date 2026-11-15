@@ -155,6 +155,8 @@ For `pr-resume`: `github_owner` (whose comment approvals count; unset: any human
 `agent_github_logins` (the agents' own GitHub accounts, ignored), and `owner_gate_labels` (default `["human-signoff"]`):
 PR labels that mean a person must approve, so QA's `qa-passed` label alone doesn't wake the waiting card. `pm_author` (default `pm`): the team lead
 profile whose `FOCUS HOLD` comment on a parked card keeps every automatic wake off it until a `FOCUS HOLD LIFTED:` comment.
+A card parked on a model quota (its reason names the model or provider and the quota or limit) wakes once that
+provider's usage is under the quota caps again, so a manual limit reset frees it without waiting for `SCHEDULED_UNTIL`.
 
 ## Conventions
 
