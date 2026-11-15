@@ -515,7 +515,8 @@ def until_due(reason, now=None):
     return m.group(1) if now >= when else None
 
 
-QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap", re.I)
+QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap|"
+                        r"(?:5-hour|weekly) (?:reset|window|limit)", re.I)
 # rule 59's person wait ("waiting on <person> for ...") is never a quota wait, even when it mentions one
 PERSON_WAIT = re.compile(r"\bwaiting (?:on|for) (?!(?:the |a )?(?:claude|codex|chatgpt|mythos|model|weekly|quota|usage|"
                          r"limit|reset|fable|opus|openai))[a-z]")
@@ -886,6 +887,7 @@ def selftest():
     assert not qb("waiting on the GitHub Actions quota (spending limit)", lo)                       # no model named
     assert not qb("waiting for the Claude quota reset", {})                                          # unknown usage
     assert not qb("waiting on hosted checks for https://github.com/o/r/pull/1", lo)
+    assert qb("waiting for the Claude 5-hour reset: this card needs Mythos 5.2. SCHEDULED_UNTIL=2099-01-01T00:00:00Z", lo)
     print("selftest ok")
 
 
