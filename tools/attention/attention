@@ -515,6 +515,52 @@ def until_due(reason, now=None):
     return m.group(1) if now >= when else None
 
 
+QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap", re.I)
+# rule 59's person wait ("waiting on <person> for ...") is never a quota wait, even when it mentions one
+PERSON_WAIT = re.compile(r"\bwaiting (?:on|for) (?!(?:the |a )?(?:claude|codex|chatgpt|mythos|model|weekly|quota|usage|"
+                         r"limit|reset|fable|opus|openai))[a-z]")
+QUOTA_REWAKE = 6 * 3600   # seconds before the same card may be woken for quota again (it re-parks if still short)
+
+
+def _quota_lib():
+    for d in (f"{H}/agents/src/quota", os.path.dirname(os.path.realpath(f"{H}/.local/bin/quota-status"))):
+        if os.path.exists(f"{d}/quota_lib.py"):
+            sys.path.insert(0, d)
+            import quota_lib
+            return quota_lib
+    return None
+
+
+def quota_back(reason, usage=None, caps=None):
+    """For a card parked on a model quota: a note once that provider's usage is under the caps again (a manual limit
+    reset, or a reset passing before its SCHEDULED_UNTIL time), else None. Unknown usage never wakes a card."""
+    r = reason or ""
+    low = r.lower()
+    if not QUOTA_WAIT.search(r) or PERSON_WAIT.search(low):
+        return None
+    want = [p for p, words in (("claude", r"claude|mythos|fable|opus|sonnet|anthropic"),
+                               ("openai-codex", r"codex|chatgpt|openai|\bgpt")) if re.search(words, low)]
+    if not want:
+        return None  # "quota" alone may be GitHub minutes or a person's budget, not a model
+    if usage is None:
+        q = _quota_lib()
+        if q is None:
+            return None
+        usage, caps = (lambda p: q.usage(p)), (q.AUTO_CAP, q.WEEKLY_CAP)
+    five_cap, week_cap = caps or (70.0, 80.0)
+    for p in want:
+        windows = usage(p)
+        if not windows:
+            return None
+        for w in windows:
+            m = w.get("model")
+            if m and m not in low and not (m == "fable" and "mythos" in low):
+                continue  # a per-model window counts only when the reason names that model (Mythos counts as Fable)
+            if w["used"] >= (five_cap if w["label"] == "5-hour" else week_cap):
+                return None
+    return f"the model quota it waited for is available again ({', '.join(want)})"
+
+
 def newer_focus_hold(conn, task, author):
     """Respect the configured PM's latest explicit hold/release after this park.
 
@@ -556,6 +602,16 @@ def pr_resume():
             if rc == 0:
                 done[t["id"]], used[t["id"]] = t["since"], f"until {due}"
                 print(f"⏰ {t['id']} ({t['who']}) resumed: parked until {due}")
+            continue
+        last = str(used.get(t["id"], ""))
+        now_s = int(dt.datetime.now().timestamp())
+        recent = last.startswith("quota ") and now_s - int(last.split()[1]) < QUOTA_REWAKE
+        back = None if recent else quota_back(t["reason"])
+        if back:
+            rc, out = resume_card(t, f"Resumed automatically: {back}. Check quota-status, then carry on.")
+            if rc == 0:
+                done[t["id"]], used[t["id"]] = t["since"], f"quota {now_s}"
+                print(f"🔋 {t['id']} ({t['who']}) resumed: {back}")
             continue
         # only the PR the wait names (reason or title): a PR merely mentioned in the body or comments woke unrelated cards
         prs = pr_refs(" ".join([t["title"] or "", t["reason"] or ""]), t["reason"],
@@ -817,6 +873,19 @@ def selftest():
     assert len(calls) == 4 and calls[3][:3] == ("resume", "t_4", "team-qa") and "4 passed" in calls[3][3], calls
     assert CI_WAIT.search("waiting on current hosted run43279585589") and CI_WAIT.search("until CI runs complete")
     assert not CI_WAIT.search("waiting on Alex for approval")
+    # quota parks wake once the named provider is under its caps again (a manual limit reset included)
+    lo = {"claude": [{"label": "5-hour", "used": 1.0}, {"label": "weekly", "used": 46.0},
+                     {"label": "Fable weekly", "used": 0.0, "model": "fable"}]}
+    hi = {"claude": [{"label": "weekly", "used": 46.0}, {"label": "Fable weekly", "used": 100.0, "model": "fable"}]}
+    qb = lambda reason, u: quota_back(reason, usage=lambda p: u.get(p), caps=(70.0, 95.0))
+    assert qb("site docs: waiting for the Mythos/Claude weekly quota reset (weekly 95%, at the auto-mode cap)", lo)
+    assert qb("Waiting for Claude Mythos 5.2: Claude Code replied it hit the Fable limit", lo)
+    assert not qb("Waiting for Claude Mythos 5.2: Claude Code replied it hit the Fable limit", hi)   # Fable still used up
+    assert qb("Waiting on the weekly Claude quota reset for the Opus review", hi)                 # Fable window not named
+    assert not qb("waiting on Alex for the Mythos quota decision", lo)                            # a person's answer
+    assert not qb("waiting on the GitHub Actions quota (spending limit)", lo)                       # no model named
+    assert not qb("waiting for the Claude quota reset", {})                                          # unknown usage
+    assert not qb("waiting on hosted checks for https://github.com/o/r/pull/1", lo)
     print("selftest ok")
 
 
