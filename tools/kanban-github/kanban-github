@@ -165,8 +165,16 @@ def unfinished_issue_work(card, all_cards, mapping):
     issue = mapping.get(card["id"]) or referenced_issue(card)
     if not issue:
         return []
+    # A QA phase can have a separate dashboard issue yet explicitly review the
+    # primary deliverable. Preserve its canonical mapping; protect that named
+    # issue too, not incidental "Refs" or dependency/history mentions.
+    def covers(other):
+        if (mapping.get(other["id"]) or referenced_issue(other)) == issue:
+            return True
+        primary = re.search(r"(?im)^[ \t]*Issue:[ \t]*#([0-9]{1,4})(?![0-9A-Za-z_])", other.get("body", ""))
+        return primary is not None and int(primary.group(1)) == issue
     return [o["id"] for o in all_cards if o["id"] != card["id"] and o["status"] not in ("done", "archived")
-            and (mapping.get(o["id"]) or referenced_issue(o)) == issue]
+            and covers(o)]
 
 
 def has_open_pr(connection):
@@ -569,6 +577,11 @@ def selftest():
     later = {"id": "b", "status": "scheduled", "title": "Report on issue #93", "body": ""}
     assert unfinished_issue_work(phase, [phase, later], {"a": 93}) == ["b"]           # live linked work vetoes closing #93
     assert unfinished_issue_work(phase, [phase, dict(later, status="done")], {"a": 93}) == []
+    qa = {"id": "q", "status": "ready", "title": "QA PR 12", "body": "Review the fix.
+Issue: #93 (Refs #50)
+"}
+    assert unfinished_issue_work(phase, [phase, qa], {"a": 93, "q": 99}) == ["q"]      # QA with its own issue names #93 as its deliverable
+    assert unfinished_issue_work(phase, [phase, dict(qa, body="Refs #93")], {"a": 93, "q": 99}) == []
     print("kanban-github selftest ok")
 
 
