@@ -577,9 +577,7 @@ def selftest():
     later = {"id": "b", "status": "scheduled", "title": "Report on issue #93", "body": ""}
     assert unfinished_issue_work(phase, [phase, later], {"a": 93}) == ["b"]           # live linked work vetoes closing #93
     assert unfinished_issue_work(phase, [phase, dict(later, status="done")], {"a": 93}) == []
-    qa = {"id": "q", "status": "ready", "title": "QA PR 12", "body": "Review the fix.
-Issue: #93 (Refs #50)
-"}
+    qa = {"id": "q", "status": "ready", "title": "QA PR 12", "body": "Review the fix.\nIssue: #93 (Refs #50)\n"}
     assert unfinished_issue_work(phase, [phase, qa], {"a": 93, "q": 99}) == ["q"]      # QA with its own issue names #93 as its deliverable
     assert unfinished_issue_work(phase, [phase, dict(qa, body="Refs #93")], {"a": 93, "q": 99}) == []
     print("kanban-github selftest ok")
