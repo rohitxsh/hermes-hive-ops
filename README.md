@@ -153,7 +153,8 @@ a date, each run once a day, for subscriptions with a status command. For exampl
 `{"name": "Data plan", "command": "plan-status", "pattern": "validUntil\s+(\S+)", "note": "renew it"}`.
 For `pr-resume`: `github_owner` (whose comment approvals count; unset: any human except `agent_github_logins`),
 `agent_github_logins` (the agents' own GitHub accounts, ignored), and `owner_gate_labels` (default `["human-signoff"]`):
-PR labels that mean a person must approve, so QA's `qa-passed` label alone doesn't wake the waiting card.
+PR labels that mean a person must approve, so QA's `qa-passed` label alone doesn't wake the waiting card. `pm_author` (default `pm`): the team lead
+profile whose `FOCUS HOLD` comment on a parked card keeps every automatic wake off it until a `FOCUS HOLD LIFTED:` comment.
 
 ## Conventions
 

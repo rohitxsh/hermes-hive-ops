@@ -515,6 +515,27 @@ def until_due(reason, now=None):
     return m.group(1) if now >= when else None
 
 
+def newer_focus_hold(conn, task, author):
+    """Respect the configured PM's latest explicit hold/release after this park.
+
+    Ordinary updates cannot clear a hold. Only a later explicit FOCUS HOLD
+    LIFTED:/RELEASED: control comment or a new native park supersedes it.
+    """
+    if not isinstance(author, str) or not author.strip():
+        raise ValueError('pm_author must be a nonempty profile name')
+    rows = conn.execute(
+        'select body from task_comments where task_id=? and author=? and created_at>=? '
+        'order by created_at desc, id desc', (task['id'], author, task.get('since') or 0)
+    )
+    for row in rows:
+        body = (row[0] or '').strip()
+        if re.match(r'^(?:SCHEDULED:\s*)?FOCUS HOLD (?:LIFTED|RELEASED):', body):
+            return False
+        if re.match(r'^(?:SCHEDULED:\s*)?FOCUS HOLD\b', body):
+            return True
+    return False
+
+
 def pr_resume():
     db = f"{H}/.hermes/kanban.db"
     if not os.path.exists(db):
@@ -526,7 +547,8 @@ def pr_resume():
     used = state.setdefault("pr_resumed_why", {})
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
     for t in kanban_waiting():
-        if done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD"):  # parked on purpose
+        if (done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD")
+                or newer_focus_hold(c, t, load("config.json", {}).get("pm_author", "pm"))):
             continue
         due = until_due(t["reason"])
         if due and used.get(t["id"]) != f"until {due}":
@@ -755,10 +777,11 @@ def selftest():
     os.makedirs(f"{H}/.hermes")
     kc = sqlite3.connect(f"{H}/.hermes/kanban.db")
     kc.executescript("create table task_events(id integer primary key, task_id, kind, payload, created_at);"
-                     "create table tasks(id, body); create table task_comments(task_id, body, created_at);"
+                     "create table tasks(id, body); create table task_comments(id integer primary key, task_id, author, body, created_at);"
                      "insert into tasks values ('t_1', 'Development merges after QA and human approval'), ('t_2', '');")
     kc.execute("insert into task_events(task_id, kind, payload, created_at) values ('t_1', 'review_requested', ?, 1)",
                (json.dumps({"implementer": "team-dev", "reviewer": "team-qa"}),))
+    kc.execute("insert into task_comments(task_id, author, body, created_at) values ('t_6', 'pm', 'SCHEDULED: FOCUS HOLD — wait for reopening', 6)")
     kc.commit()
     assert implementer(kc, "t_1", "team-dev") is None and implementer(kc, "t_2", "team-qa") is None
     calls, g = [], globals()
@@ -771,7 +794,9 @@ def selftest():
         {"id": "t_4", "who": "team-qa", "title": "w", "since": 5, "status": "scheduled",
          "reason": "local QA PASS; waiting on current hosted run43279585589 for https://github.com/o/r/pull/12"},
         {"id": "t_5", "who": "team-qa", "title": "v", "since": 5, "status": "scheduled",
-         "reason": "waiting on current hosted checks for https://github.com/o/r/pull/13"}]
+         "reason": "waiting on current hosted checks for https://github.com/o/r/pull/13"},
+        {"id": "t_6", "who": "team-dev", "title": "held after park", "since": 5, "status": "scheduled",
+         "reason": "SCHEDULED_UNTIL=2020-01-01T00:00:00Z"}]
     g["pr_approved"] = lambda slug, num, since, owner: {"9": (True, "approved in review"), "10": (False, "waiting"),
                                                          "11": (None, "not a pull request"), "12": (False, "waiting"),
                                                          "13": (False, "waiting")}.get(num, (True, "approved in review"))
