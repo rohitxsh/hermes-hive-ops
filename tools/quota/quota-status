@@ -5,6 +5,8 @@
   quota-status --gate              "ok" (exit 0), "wrap up: <why>" (exit 2: close to a pause, finish the current
                                    step and save a handoff) or "paused: <why>" (exit 1) for scheduled/auto work
   quota-status --gate --claude-code    same for starting a Claude Code CLI run (shares the Claude limit)
+  quota-status --gate --claude-code --model claude-mythos-5-2
+                                   check that exact model, including its Fable weekly limit
 Options: --profile NAME (default: the calling agent's profile), --fresh (re-read usage instead of the
 few-minute cache). Usage nobody can read counts as available.
 """
@@ -22,7 +24,10 @@ def main():
     ap.add_argument("--claude-code", action="store_true")
     ap.add_argument("--profile")
     ap.add_argument("--fresh", action="store_true")
+    ap.add_argument("--model", help="Exact Claude Code model to check; requires --claude-code")
     a = ap.parse_args()
+    if a.model and (not a.claude_code or not a.model.startswith("claude-")):
+        ap.error("--model requires --claude-code and a claude- model name")
     profile = a.profile or q.current_profile()
     home = q.profile_home(profile)
     providers = q.chain(home)
@@ -30,7 +35,13 @@ def main():
     capped = q.caps(home)  # the auto-mode caps also apply when the owner made them permanent (quota-caps.json)
     cp = q.cap_providers(home) if capped else ()
 
-    getu = q.profile_usage(home, lambda p: q.usage(p, fresh=a.fresh))
+    readings = {}
+    def raw_usage(provider):
+        key = "claude" if q.is_claude(provider) else provider
+        if key not in readings:
+            readings[key] = q.usage(provider, fresh=a.fresh)
+        return readings[key]
+    getu = q.profile_usage(home, raw_usage, models=[a.model] if a.model else None)
 
     if a.gate:
         ok, why = q.claude_code_allowed(capped, getu) if a.claude_code else q.run_allowed(providers, capped, getu, cp, q.paid_ok(home))
@@ -47,6 +58,14 @@ def main():
     for n, p in enumerate(providers):
         mark = "→ answering now" if n == i else ("used up" if n < i else "")
         print(f"  {n + 1}. {q.provider_name(p)}: {q.describe(getu(p))} {mark}".rstrip())
+    if any(q.is_claude(p) for p in providers):
+        scoped = [w for w in raw_usage("claude") or [] if w.get("model")]
+        if scoped:
+            print("Model-specific Claude limits (separate from the profile's available fallbacks):")
+            print("  " + q.describe(scoped))
+            if any(w.get("model") == "fable" for w in scoped):
+                print("  Fable is the provider's quota bucket for Mythos; an available Opus fallback does not clear it.")
+            print("  Check a pinned model: quota-status --gate --claude-code --model <claude-model>")
     if i >= len(providers):
         print("  Every provider is used up right now.")
     ok, why = q.run_allowed(providers, capped, getu, cp, q.paid_ok(home))

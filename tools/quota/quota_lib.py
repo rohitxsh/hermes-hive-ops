@@ -11,8 +11,8 @@ Policy (owner's rules, 2026-10-25):
   Claude Code CLI shares the Claude limit, so in auto mode Claude Code runs are gated at the same caps.
 - The same caps apply permanently to a profile whose home has quota-caps.json {"always_auto_caps": true} (jobs,
   owner 2026-10-26), whether or not its auto mode is on (`caps()`). Its "cap_providers" list (e.g. ["claude"]) also caps
-  those providers wherever they sit in the chain: when the provider that would answer is one of them and has reached a
-  cap, scheduled work pauses (for example a profile whose chain starts with Claude).
+  those providers wherever they sit in the chain: if any explicitly named provider reaches a cap, scheduled work
+  pauses even while another provider is answering (for example healthy Codex with capped Claude as its fallback).
 - A machine can set its own caps in ~/agents/quota-caps.json, e.g. {"five_hour": 95, "weekly": 95, "all_modes": true,
   "wrap_margin": 3}: the percentages work stops at, the wrap-up margin, and with all_modes the caps apply to every
   profile whether auto mode is on or off. ~/agents/quota-no-caps (older switch) turns the caps off: work runs until used up.
@@ -378,10 +378,12 @@ def run_allowed(providers, auto, getu, capped=(), paid=False):
     i = active_index(providers, getu)
     if _paid_ahead(providers, i, paid):
         return True, ""
-    if auto and i < len(providers) and _named(providers[i], capped):
-        why = auto_cap(providers[i], getu(providers[i]))
-        if why:
-            return False, f"{why} (capped for this profile)"
+    if auto:
+        for provider in providers:
+            if _named(provider, capped):
+                why = auto_cap(provider, getu(provider))
+                if why:
+                    return False, f"{why} (capped for this profile)"
     if i >= min(2, len(providers)):
         return False, (f"{provider_name(providers[0])} and {provider_name(providers[1])} are both used up "
                        f"({describe(getu(providers[0]))}; {describe(getu(providers[1]))})" if len(providers) > 1
@@ -443,13 +445,17 @@ def claude_models(home):
 
 def scope_claude(windows, models):
     """Drop per-model windows that don't cover every Claude model of the profile (unknown models: drop them all)."""
-    return [w for w in windows if not w.get("model") or (models and all(w["model"] in m for m in models))]
+    # The provider names Mythos's quota bucket Fable (also used in its 429 responses).
+    def covered(bucket, model):
+        return bucket in model or (bucket == "fable" and model.startswith("claude-mythos-"))
+    return [w for w in windows if not w.get("model") or
+            (models and all(covered(w["model"], m) for m in models))]
 
 
-def profile_usage(home, getu, now=None):
+def profile_usage(home, getu, now=None, models=None):
     """getu for one profile: a provider that failed there recently counts as used up until FAIL_WINDOW passes."""
     failed = recent_failures(home, now)
-    models = claude_models(home)
+    models = claude_models(home) if models is None else models
 
     def get(provider):
         if provider in failed:
@@ -466,14 +472,17 @@ def wrap_up(providers, auto, getu, capped=(), paid=False):
     if not providers or not run_allowed(providers, auto, getu, capped)[0] or _paid_ahead(providers, active_index(providers, getu), paid):
         return ""
     i, last = active_index(providers, getu), min(1, len(providers) - 1)
-    if auto and i < len(providers) and _named(providers[i], capped):
-        ws = getu(providers[i]) or []
-        w = five_hour(ws)
-        if w and w["used"] >= AUTO_CAP - WRAP_MARGIN:
-            return f"{provider_name(providers[i])}'s 5-hour window is at {w['used']:.0f}% (this profile pauses at {AUTO_CAP:.0f}%)"
-        w = next((w for w in ws if w["label"].endswith("weekly") and w["used"] >= WEEKLY_CAP - WRAP_MARGIN), None)
-        if w:
-            return f"{provider_name(providers[i])}'s {w['label']} limit is at {w['used']:.0f}% (this profile pauses at {WEEKLY_CAP:.0f}%)"
+    if auto and not NO_CAPS:
+        for provider in providers:
+            if not _named(provider, capped):
+                continue
+            ws = getu(provider) or []
+            w = five_hour(ws)
+            if w and w["used"] >= AUTO_CAP - WRAP_MARGIN:
+                return f"{provider_name(provider)}'s 5-hour window is at {w['used']:.0f}% (this profile pauses at {AUTO_CAP:.0f}%)"
+            w = next((w for w in ws if w["label"].endswith("weekly") and w["used"] >= WEEKLY_CAP - WRAP_MARGIN), None)
+            if w:
+                return f"{provider_name(provider)}'s {w['label']} limit is at {w['used']:.0f}% (this profile pauses at {WEEKLY_CAP:.0f}%)"
 
     def close(k):
         ws = getu(providers[k]) or []
@@ -506,6 +515,8 @@ def selftest_model_scoped():
     assert len(scope_claude(ws, ["claude-fable-5-1[1m]", "claude-opus-5-5[1m]"])) == 1  # Opus fallback: doesn't
     assert len(scope_claude(ws, ["claude-opus-5-5[1m]"])) == 1 and len(scope_claude(ws, [])) == 1
     assert used_up(scope_claude(ws, ["claude-fable-5-1[1m]"])) and not used_up(scope_claude(ws, ["claude-opus-5-5"]))
+    assert used_up(scope_claude(ws, ["claude-mythos-5-2"]))  # provider calls this quota bucket Fable
+    assert len(scope_claude(ws, ["claude-mythos-5-2", "claude-opus-5-5"])) == 1
 
 
 def selftest():
