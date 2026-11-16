@@ -515,11 +515,12 @@ def until_due(reason, now=None):
     return m.group(1) if now >= when else None
 
 
-QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap|"
-                        r"(?:5-hour|weekly) (?:reset|window|limit)", re.I)
-# rule 59's person wait ("waiting on <person> for ...") is never a quota wait, even when it mentions one
-PERSON_WAIT = re.compile(r"\bwaiting (?:on|for) (?!(?:the |a )?(?:claude|codex|chatgpt|mythos|model|weekly|quota|usage|"
-                         r"limit|reset|fable|opus|openai))[a-z]")
+QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap|usage reset|"
+                        r"(?:5-hour|weekly) (?:reset|window|limit|cap)|allowance", re.I)
+# rule 59's person wait ("waiting on <person> for ...") is never a quota wait, even when it mentions one;
+# "waiting on the required Mythos reviewer" is not a person (up to three words before the model/quota word)
+PERSON_WAIT = re.compile(r"\bwaiting (?:on|for) (?!(?:(?!for |on )[a-z0-9.-]+ ){0,3}(?:claude|codex|chatgpt|mythos|model|weekly|quota|"
+                         r"usage|limit|reset|fable|opus|openai))[a-z]")
 QUOTA_REWAKE = 6 * 3600   # seconds before the same card may be woken for quota again (it re-parks if still short)
 
 
@@ -888,6 +889,11 @@ def selftest():
     assert not qb("waiting for the Claude quota reset", {})                                          # unknown usage
     assert not qb("waiting on hosted checks for https://github.com/o/r/pull/1", lo)
     assert qb("waiting for the Claude 5-hour reset: this card needs Mythos 5.2. SCHEDULED_UNTIL=2099-01-01T00:00:00Z", lo)
+    assert qb("Waiting for the Mythos 5.2 weekly cap to reset (Wed 18 Nov 15:30 IST): a security design that must run on Mythos", lo)
+    assert qb("Partly done: final security QA is still waiting on the required Mythos reviewer; the provider refused "
+              "claude-mythos-5-2 with its Fable limit", lo)
+    assert qb("Waiting for the previously reported Mythos usage reset to finish the comparisons. SCHEDULED_UNTIL=2099-01-01T00:00:00Z", lo)
+    assert not qb("Mythos reviewed it. Still waiting on Alex for restricting the environments; weekly limit noted", lo)
     print("selftest ok")
 
 
