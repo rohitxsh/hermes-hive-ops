@@ -158,10 +158,11 @@ def kanban_waiting():
     rows = c.execute(f"""select t.id, t.assignee, t.title, coalesce(t.block_kind, 'needs_input'),
         (select max(created_at) from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')),
         (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')
-         order by created_at desc limit 1), t.status
-        from tasks t where t.status in ('blocked', 'scheduled') or (t.status = 'triage' and {LOOP_HELD_SQL})""").fetchall()
+         order by created_at desc limit 1), t.status, coalesce(t.priority, 0), coalesce(t.model_override, '')
+        from tasks t where t.status in ('blocked', 'scheduled') or (t.status = 'triage' and {LOOP_HELD_SQL})
+        order by coalesce(t.priority, 0) desc""").fetchall()
     out = []
-    for tid, who, title, kind, since, payload, status in rows:
+    for tid, who, title, kind, since, payload, status, priority, model in rows:
         if kind in ("dependency", "transient") and status != "scheduled":
             continue   # block_kind describes a block; a parked (scheduled) card keeps a stale one from an earlier block
         reason = ""
@@ -171,8 +172,26 @@ def kanban_waiting():
             pass
         if reason in ("initial_status", "blocked"):  # placeholder reasons Hermes records at creation
             reason = ""
-        out.append({"id": tid, "who": who, "title": title, "since": since, "reason": reason, "status": status})
+        out.append({"id": tid, "who": who, "title": title, "since": since, "reason": reason, "status": status,
+                    "priority": priority, "model": model})
     return out
+
+
+def model_slots(conn):
+    """Ready or running cards per pinned model (model_override)."""
+    try:
+        return dict(conn.execute("select model_override, count(*) from tasks where status in ('ready', 'running') "
+                                 "and coalesce(model_override, '') != '' group by model_override").fetchall())
+    except sqlite3.Error:
+        return {}
+
+
+def model_wake_ok(task, limits, active):
+    """config.json "model_wake_limits" {"<model>": N}: at most N cards pinned to that model are ready or running at
+    once. Cards come highest priority first, so a scarce model's window goes to the most important card instead of
+    whichever woke first (several parallel runs can use up a 5-hour window in under an hour)."""
+    m = task.get("model") or ""
+    return m not in limits or active.get(m, 0) < int(limits[m])
 
 
 # A card Hermes moved to triage after repeated blocks of one kind (limit 2) still waits on a person; the loop-hold
@@ -594,15 +613,20 @@ def pr_resume():
     # an approval is timeless: without this, every re-block of the same card resumes it again (block loop)
     used = state.setdefault("pr_resumed_why", {})
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    limits = load("config.json", {}).get("model_wake_limits", {})
+    active = model_slots(c) if limits else {}
     for t in kanban_waiting():
         if (done.get(t["id"]) == t["since"] or (t["reason"] or "").startswith("FOCUS HOLD")
                 or newer_focus_hold(c, t, load("config.json", {}).get("pm_author", "pm"))):
             continue
         due = until_due(t["reason"])
         if due and used.get(t["id"]) != f"until {due}":
+            if not model_wake_ok(t, limits, active):
+                continue  # its model's slots are taken: a later run wakes it, highest priority first
             rc, out = resume_card(t, f"Resumed automatically: it was parked until {due}, which has passed. Carry on.")
             if rc == 0:
                 done[t["id"]], used[t["id"]] = t["since"], f"until {due}"
+                active[t.get("model") or ""] = active.get(t.get("model") or "", 0) + 1
                 print(f"⏰ {t['id']} ({t['who']}) resumed: parked until {due}")
             continue
         last = str(used.get(t["id"], ""))
@@ -610,9 +634,12 @@ def pr_resume():
         recent = last.startswith("quota ") and now_s - int(last.split()[1]) < QUOTA_REWAKE
         back = None if recent else quota_back(t["reason"])
         if back:
+            if not model_wake_ok(t, limits, active):
+                continue  # its model's slots are taken: a later run wakes it, highest priority first
             rc, out = resume_card(t, f"Resumed automatically: {back}. Check quota-status, then carry on.")
             if rc == 0:
                 done[t["id"]], used[t["id"]] = t["since"], f"quota {now_s}"
+                active[t.get("model") or ""] = active.get(t.get("model") or "", 0) + 1
                 print(f"🔋 {t['id']} ({t['who']}) resumed: {back}")
             continue
         # only the PR the wait names (reason or title): a PR merely mentioned in the body or comments woke unrelated cards
@@ -888,6 +915,17 @@ def selftest():
     assert not qb("waiting on the GitHub Actions quota (spending limit)", lo)                       # no model named
     assert not qb("waiting for the Claude quota reset", {})                                          # unknown usage
     assert not qb("waiting on hosted checks for https://github.com/o/r/pull/1", lo)
+    # model_wake_limits: at most N cards pinned to a scarce model are ready or running at once
+    lim = {"claude-mythos-5-2": 2}
+    assert model_wake_ok({"model": "claude-mythos-5-2"}, lim, {"claude-mythos-5-2": 1})
+    assert not model_wake_ok({"model": "claude-mythos-5-2"}, lim, {"claude-mythos-5-2": 2})
+    assert model_wake_ok({"model": ""}, lim, {"claude-mythos-5-2": 9}) and model_wake_ok({"model": "x"}, {}, {})
+    mc = sqlite3.connect(":memory:")
+    assert model_slots(mc) == {}                                     # no tasks table: no counts, no crash
+    mc.executescript("create table tasks(id, status, model_override);"
+                     "insert into tasks values ('a','running','claude-mythos-5-2'),('b','ready','claude-mythos-5-2'),"
+                     "('c','scheduled','claude-mythos-5-2'),('d','running',null);")
+    assert model_slots(mc) == {"claude-mythos-5-2": 2}
     assert qb("waiting for the Claude 5-hour reset: this card needs Mythos 5.2. SCHEDULED_UNTIL=2099-01-01T00:00:00Z", lo)
     assert qb("Waiting for the Mythos 5.2 weekly cap to reset (Wed 18 Nov 15:30 IST): a security design that must run on Mythos", lo)
     assert qb("Partly done: final security QA is still waiting on the required Mythos reviewer; the provider refused "

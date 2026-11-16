@@ -157,6 +157,8 @@ PR labels that mean a person must approve, so QA's `qa-passed` label alone doesn
 profile whose `FOCUS HOLD` comment on a parked card keeps every automatic wake off it until a `FOCUS HOLD LIFTED:` comment.
 A card parked on a model quota (its reason names the model or provider and the quota or limit) wakes once that
 provider's usage is under the quota caps again, so a manual limit reset frees it without waiting for `SCHEDULED_UNTIL`.
+Waiting cards are taken highest priority first; `model_wake_limits` (e.g. `{"<model>": 2}`) caps how many cards pinned to
+a scarce model are ready or running at once, so its window goes to the most important card.
 
 ## Conventions
 
