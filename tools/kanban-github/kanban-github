@@ -92,8 +92,25 @@ def week_for(text, weeks, year=2026):
     return None
 
 
+REPORTER = re.compile(r"(?im)^[ \t]*Reporter:[ \t]*(\S+)")
+REPORTER_LINE = re.compile(r"(?im)^[ \t]*Reporter:.*$")
+
+
+def reporter(text, people):
+    """GitHub login of the person a "Reporter: <alias>" line names (who asked for the work), or None. A reporter is
+    named in the issue body and never becomes an assignee."""
+    m = REPORTER.search(text or "")
+    if not m:
+        return None
+    alias = m.group(1).strip(".,;")
+    for p in people:
+        if alias.lower() in (a.lower() for a in p.get("aliases", [])) and p.get("github"):
+            return p["github"][0]
+    return None
+
+
 def owners(text, people):
-    head = re.split(r"\bAC ?1\b|\bAC:", text or "", maxsplit=1)[0][:600]
+    head = REPORTER_LINE.sub("", re.split(r"\bAC ?1\b|\bAC:", text or "", maxsplit=1)[0])[:600]
     hit = []
     for p in people:
         if any(re.search(rf"(?<![\w@]){re.escape(a)}(?!\w)", head, re.I) for a in p.get("aliases", [])):
@@ -264,9 +281,10 @@ def desired(card, conf, people):
         labels.append(conf["owner_label"])
     # Only the first introductory sentence is a public-summary candidate.
     # Do not copy detailed work instructions, even when written on one line.
-    lead = (card["body"].strip().splitlines() or [""])[0]
+    lead = (REPORTER_LINE.sub("", card["body"]).strip().splitlines() or [""])[0]
     summary = public_text(re.split(r"(?<=[.!?])\s+", lead, maxsplit=1)[0])[:1800]
-    body = (f"{summary}\n\n---\n"
+    rep = reporter(card["body"], people)
+    body = (f"{summary}\n\n" + (f"Reported by @{rep}.\n\n" if rep else "") + "---\n"
             "Use this issue for requirements, deliverables and review evidence. "
             "Creating this issue does not grant implementation, merge or release approval.").strip()
     return {"title": (public_text(card["title"]) or FALLBACK_TITLE)[:240], "body": body, "assignees": logins, "labels": sorted(set(labels)),
@@ -549,6 +567,12 @@ def selftest():
     assert week_for("O4 · by 13 Nov: decisions", weeks) == "Week 1 · 9–15 Nov"
     people = [{"key": "a", "aliases": ["owner2"], "github": ["gh-a"]}, {"key": "f", "aliases": ["founder1"], "github": []}]
     assert [p["key"] for p in owners("Human owner owner2; QA x. AC1 founder1 approves", people)] == ["a"]
+    # a Reporter line names who asked for the work in the issue body; it never makes them an owner
+    rep_card = {"id": "t_r", "status": "ready", "kind": "", "reason": "", "assignee": "team-dev", "title": "R x",
+                "body": "Clean up the docs.\nReporter: owner2 (Owner Two).\nMore detail."}
+    d = desired(rep_card, {"role_github": {"team-dev": ["gh-dev"]}}, people)
+    assert d["assignees"] == ["gh-dev"] and "Reported by @gh-a." in d["body"] and d["body"].startswith("Clean up the docs."), d
+    assert reporter("Reporter: nobody", people) is None and owners("Reporter: owner2", people) == []
     assert sanitize("See t_1234abcd and ~/work/x/docs/a.md in the Kanban card") == "See and in the task task"
     assert status_for("scheduled", "", "waiting on founder1 for facts", people) == "Awaiting Human Approval"
     assert status_for("scheduled", "", "waiting on capacity after v1.0", people) == "Paused"
