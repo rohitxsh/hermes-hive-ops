@@ -74,6 +74,7 @@ Dropped with Hermes v0.23.2 (fixed upstream): `queued-reaction-apply.py` (#15345
 | `pr-rules-plan-apply.py` | GitHub's 403 "Upgrade to GitHub Pro" on the rulesets endpoint no longer breaks the Kanban PR gate | PR #143935 (open) |
 | `leading-mention-apply.py` | A Discord message that starts with an @mention of someone else is ignored by every agent (keep it: the `ops-core` plugin's `pre_gateway_dispatch` hook is only a fallback, because Discord's 👀 reaction and typing indicator start before plugin hooks run; with the hook alone the agent stays silent but still shows those) | PR #120266 (open; leading mode suggested) |
 | `kanban-list-fence-apply.py` | `hermes kanban list` works inside a delegated helper (it skips only the ready-lane refresh the fence refuses) | issue #148926 |
+| `kanban-reschedule-apply.py` | `hermes kanban schedule <id> "<reason>"` on an already scheduled card records the new wait reason in place (admin CLI and dashboard only; no status, run or claim change), instead of "cannot schedule" and an unsafe `unblock` + `schedule`. `--check`, `--test` | none yet |
 | `kanban-stale-auth-apply.py` | A quota error left by an older run no longer holds a card forever after a later run ended normally | issue #138618; fix PRs open, e.g. #141740 |
 | `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) | Camofox server, not Hermes |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |
