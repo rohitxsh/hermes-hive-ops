@@ -17,10 +17,16 @@ F = ROOT / "tools/delegate_tool_routes.py"
 TAG = ".bak-2026-11-13-delegation-fallback"
 MARK = "local patch (2026-11-13): delegation primary unresolvable -> route fallback"
 
-A1 = ("    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam\n"
-      "    creds = _resolve_delegation_credentials(route, parent_agent)\n")
-B1 = ("    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam\n"
-      f"    creds, route = _resolve_with_route_fallback(route, parent_agent, _resolve_delegation_credentials)  # {MARK}\n")
+# (anchor, replacement) per Hermes layout: v0.23.2+ imports the resolver at module level, v0.23.1 inside the function
+ANCHORS = [
+    ("    creds = _resolve_delegation_credentials(route, parent_agent)\n    if route.get(\"service_tier\")",
+     f"    creds, route = _resolve_with_route_fallback(route, parent_agent, _resolve_delegation_credentials)  # {MARK}\n"
+     "    if route.get(\"service_tier\")"),
+    ("    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam\n"
+     "    creds = _resolve_delegation_credentials(route, parent_agent)\n",
+     "    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam\n"
+     f"    creds, route = _resolve_with_route_fallback(route, parent_agent, _resolve_delegation_credentials)  # {MARK}\n"),
+]
 H = f'''
 
 _ROUTE_ENDPOINT_KEYS = ("provider", "model", "base_url", "api_key", "api_mode")
@@ -108,8 +114,9 @@ if "--test" in sys.argv:
     selftest()
     sys.exit(0)
 if MARK not in s:
-    assert s.count(A1) == 1, "delegate_tool_routes.py anchor not found once; upstream changed, patch by hand"
-    s = s.replace(A1, B1).rstrip("\n") + "\n" + H
+    hits = [(a, b) for a, b in ANCHORS if s.count(a) == 1]
+    assert hits, "delegate_tool_routes.py anchor not found once; upstream changed, patch by hand"
+    s = s.replace(hits[0][0], hits[0][1]).rstrip("\n") + "\n" + H
     compile(s, str(F), "exec")
     if not Path(str(F) + TAG).exists():
         shutil.copy2(F, str(F) + TAG)

@@ -1,5 +1,5 @@
 diff --git a/plugins/platforms/discord/adapter_slash_auth.py b/plugins/platforms/discord/adapter_slash_auth.py
-index ebb80b5cde..c623538990 100644
+index 1686a0e161..77a6b81a97 100644
 --- a/plugins/platforms/discord/adapter_slash_auth.py
 +++ b/plugins/platforms/discord/adapter_slash_auth.py
 @@ -1,12 +1,10 @@
@@ -17,7 +17,7 @@ index ebb80b5cde..c623538990 100644
  
  
  class DiscordSlashAuthMixin:
-@@ -27,6 +25,13 @@ class DiscordSlashAuthMixin:
+@@ -28,6 +26,13 @@ class DiscordSlashAuthMixin:
          Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
          Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
          """
@@ -28,9 +28,9 @@ index ebb80b5cde..c623538990 100644
 +        except ImportError:
 +            return (False, "discord.py unavailable")
 +
+         self._refresh_live_gates()  # a config.yaml edit applies to the next invocation
          chan_obj = getattr(interaction, "channel", None)
          in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
-         channel_ids: set = set()
 diff --git a/tests/gateway/test_discord_slash_auth_dependencies.py b/tests/gateway/test_discord_slash_auth_dependencies.py
 new file mode 100644
 index 0000000000..734bf1a3a7

@@ -64,6 +64,10 @@ vanilla Hermes and checks patches, tools, jobs and the self-check, without touch
 ### `patches/` — fixes to Hermes itself
 Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--check` and `--test`.
 
+After `hermes update`, apply the `.patch` files (`git apply`, from `~/.hermes/hermes-agent`) **before** the `*-apply.py` scripts: `team-notification-here.patch` edits lines in the Discord adapter that `clarify-card-retire-apply.py` also changes, and only that order applies cleanly (the scripts are idempotent and anchor on text the patch leaves intact). `smart-unattended-approvals.patch` is reference only; its script applies it.
+
+Dropped with Hermes v0.23.2 (fixed upstream): `queued-reaction-apply.py` (#153451), `oauth-callback-threads-apply.py` (#135627) and `drain-reply-apply.py` (v0.23.2 replies to messages refused during a restart drain itself).
+
 | Patch | What it fixes | Upstream (NousResearch/hermes-agent) |
 |---|---|---|
 | `kanban-guardrail-block-apply.py` | A loop-guard halt in a Kanban worker blocks the card with the reason instead of a protocol-violation crash and restart | PR #103907 (open) |
@@ -73,8 +77,6 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `kanban-stale-auth-apply.py` | A quota error left by an older run no longer holds a card forever after a later run ended normally | issue #138618; fix PRs open, e.g. #141740 |
 | `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) | Camofox server, not Hermes |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |
-| `drain-reply-apply.py` | A message that arrives while the gateway is draining for a restart gets a plain "restarting, send it again in a minute" reply instead of the generic "Sorry, I encountered an error." (Hermes refuses it with `runtime_draining` and nothing replays it) | none yet |
-| `queued-reaction-apply.py` | Messages queued while an agent is busy get the same 👀/✅ reactions as direct ones | Merged upstream in #153451 (d8eff5f6aa, from #148610 and #148611); drop after updating past it |
 | `clarify-card-retire-apply.py` | Discord gets `retire_clarify_card` (Slack and Feishu already had it): when a typed message answers a question card, or the question times out or is cancelled, the card loses its buttons and its footer shows "✅ answered: …" (or the expiry notice), so a typed answer no longer looks ignored. Keeps extra local arguments on the `send_clarify` call (works with `team-notification-here.patch`). `--check`, `--test` | none yet |
 | `loop-hold-apply.py` | A card Hermes sent to triage for looping blocks waits for its owner instead of being re-promoted (or fanned out) by the auto-decomposer; once the owner edits or reassigns it, it is released as written | issue #109453 |
 | `backup-vanished-apply.py` | `hermes backup` no longer fails when the scheduler deletes its own short-lived job files, or a Kanban worker its scratch files, mid-backup; any other missing file still fails it | PR #147369 (open) |
@@ -83,7 +85,6 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 | `kanban-show-compact-apply.py` | `kanban_show` called by an orchestrator (not the dispatched worker reading its own card) leaves out `worker_context` and keeps the last 10 events instead of 50: about half the size on large cards (measured 125k → 63k chars). `--check`, `--test` | PR #145090 (open) |
 | `queued-typing-apply.py` | A message queued while the agent is busy shows the Discord typing indicator again as soon as its turn starts (the restart was a no-op while the old 12 s typing loop ran, so the queued turn often showed none) | PR #148598 |
 | `kanban-pr-guard-author-apply.py` | The duplicate-PR guard (`active_pr`) counts only PR links in comments by the card's own assignee, so a PM or reviewer citing a PR no longer holds an unrelated ready card for 24 h ("kanban dispatcher stuck") | PR #146075 (open) |
-| `oauth-callback-threads-apply.py` | `hermes mcp login` no longer hangs when the browser opens an empty preconnect to the callback port: the listener served one connection at a time and waited on that one while the real `/callback` sat in the backlog. Each connection now gets its own thread (`--test` reproduces the hang) | PR #135627 (open; same fix, covers the other loopback listeners too) |
 | `quiet-recall-status-apply.py` | The memory recall line ("🧠 Holographic — recalled 2 memories") and the transcript-reload notice stay out of Discord and other chats (the CLI keeps them), like the compaction notices Hermes already filters there. Pair it with `display.platforms.discord.suppress_warning_notifications: true` so chats get only real agent messages | none yet |
 | `guardian-filter-retry-apply.py` (+ test) | When a provider's content filter blanks the smart-approval guardian's one-word verdict, the profile's first fallback provider is asked once instead of escalating (an escalation in an unattended run is a refusal). Pair it with `auxiliary.approval.fallback_chain` set to that same provider, so a provider outage doesn't escalate everything either | PR #154357 (open) |
 | `smart-unattended-apply.py` (+ `.patch`, test) | Smart approvals also for unattended runs (cron, Kanban) | PRs #98873 (cron), #135169 (verdict parsing) |

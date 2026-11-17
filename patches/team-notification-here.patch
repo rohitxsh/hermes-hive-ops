@@ -1,8 +1,8 @@
 diff --git a/plugins/platforms/discord/adapter.py b/plugins/platforms/discord/adapter.py
-index e4a155574f..3e46e12d5e 100644
+index 358a43c505..b75962b704 100644
 --- a/plugins/platforms/discord/adapter.py
 +++ b/plugins/platforms/discord/adapter.py
-@@ -689,6 +689,30 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
+@@ -644,6 +644,30 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
      )
  
  
@@ -21,7 +21,7 @@ index e4a155574f..3e46e12d5e 100644
 +    if not enabled or not (notify or re.match(r"^\s*@here(?:\s|$)", content)):
 +        return content, {}
 +    body = content.lstrip()
-+    prefix = r"^(?:@here(?=\s|$)|@Owner(?=\s|$))\s*"  # <@id> tags stay (2026-11-09)
++    prefix = r"^(?:@here(?=\s|$)|@Rohit(?=\s|$))\s*"  # <@id> tags stay: people are tagged by area (2026-11-09)
 +    while re.match(prefix, body):
 +        body = re.sub(prefix, "", body, count=1)
 +    body = body.replace("@everyone", "＠everyone").replace("@here", "＠here")
@@ -33,7 +33,7 @@ index e4a155574f..3e46e12d5e 100644
  def _discord_ready_timeout_seconds() -> float:
      """Return the Discord ready wait timeout during gateway startup."""
      raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
-@@ -3283,9 +3304,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3171,9 +3195,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                      return SendResult(success=False, error=f"Channel {chat_id} not found")
              # Forum channels reject channel.send() — create a thread post instead.
              if self._is_forum_parent(channel):
@@ -47,10 +47,10 @@ index e4a155574f..3e46e12d5e 100644
 +                notify=bool(metadata and metadata.get("job_id")),
 +                can_silence=True,
 +            )
-             chunks = self._cap_split_chunks(
-                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-             )
-@@ -3297,7 +3323,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+             message_ids = []
+             reference = self._reply_reference_for_send(reply_to, channel)
+@@ -3183,7 +3212,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                  else:  # "first" (default) or "off"
                      chunk_reference = reference if i == 0 else None
                  try:
@@ -59,7 +59,7 @@ index e4a155574f..3e46e12d5e 100644
                  except Exception as e:
                      if chunk_reference is not None and self._is_reply_reference_rejected(e):
                          logger.warning(
-@@ -3305,7 +3331,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3191,7 +3220,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                              self.name, reply_to,
                          )
                          reference = None
@@ -68,7 +68,7 @@ index e4a155574f..3e46e12d5e 100644
                      else:
                          raise
                  message_ids.append(str(msg.id))
-@@ -3344,15 +3370,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3230,15 +3259,20 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
          message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
          return thread_channel, thread_id, starter_msg, message_id
  
@@ -83,7 +83,7 @@ index e4a155574f..3e46e12d5e 100644
 +            notify=team_notification,
 +            can_silence=True,
 +        )
-         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
          thread_name = _derive_forum_thread_name(content)
          starter_content = chunks[0] if chunks else thread_name
          try:
@@ -92,7 +92,7 @@ index e4a155574f..3e46e12d5e 100644
          except Exception as e:
              logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
              return SendResult(success=False, error=f"Forum thread creation failed: {e}")
-@@ -3361,7 +3392,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3247,7 +3281,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
          warnings: list[str] = []
          for chunk in chunks[1:]:
              try:
@@ -101,7 +101,7 @@ index e4a155574f..3e46e12d5e 100644
                  message_ids.append(str(msg.id))
              except Exception as e:
                  warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
-@@ -3443,7 +3474,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3329,7 +3363,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
          try:
              channel = await self._resolve_channel(chat_id)
              msg = channel.get_partial_message(int(message_id))
@@ -113,7 +113,7 @@ index e4a155574f..3e46e12d5e 100644
              _preview_key = (str(chat_id), str(message_id))
              _saturated_preview = False
              if finalize:
-@@ -3464,7 +3498,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3350,7 +3387,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                  # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                  self._last_overflow_preview.pop(_preview_key, None)
              try:
@@ -122,7 +122,7 @@ index e4a155574f..3e46e12d5e 100644
                  if _saturated_preview:
                      self._last_overflow_preview[_preview_key] = formatted
              except Exception as edit_err:
-@@ -3476,7 +3510,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3362,7 +3399,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                      if self._last_overflow_preview.get(_preview_key) == truncated:
                          # Saturated-preview dedup (see pre-flight path above).
                          return SendResult(success=True, message_id=message_id)
@@ -131,7 +131,7 @@ index e4a155574f..3e46e12d5e 100644
                      self._last_overflow_preview[_preview_key] = truncated
                  else:
                      raise
-@@ -3512,14 +3546,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3398,14 +3435,17 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
          replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
          A continuation failure still reports success plus ``partial_overflow`` so the consumer
          delivers the tail; only a first-chunk edit failure returns ``success=False``."""
@@ -140,7 +140,7 @@ index e4a155574f..3e46e12d5e 100644
 +            self.format_message(content),
 +            enabled=self._extra_or_env_flag("team_notification_here", "DISCORD_TEAM_NOTIFICATION_HERE", "false", truthy=True),
 +        )
-         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
          if len(chunks) <= 1:
              # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
 -            await msg.edit(content=chunks[0] if chunks else formatted)
@@ -152,7 +152,7 @@ index e4a155574f..3e46e12d5e 100644
          except Exception as e:
              logger.error(
                  "[%s] Overflow split: first-chunk edit failed: %s", self.name, e, exc_info=True,
-@@ -3539,7 +3576,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3425,7 +3465,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                  # Prior message without to_reference (duck-typed): build the reference from ids.
                  reference = self._message_reference_from_ids(prev_msg.id, channel)
              try:
@@ -161,7 +161,7 @@ index e4a155574f..3e46e12d5e 100644
              except Exception as send_err:
                  # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
                  logger.warning(
-@@ -3547,7 +3584,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -3433,7 +3473,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                      self.name, send_err,
                  )
                  try:
@@ -170,7 +170,7 @@ index e4a155574f..3e46e12d5e 100644
                  except Exception as retry_err:
                      logger.warning(
                          "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
-@@ -5628,7 +5665,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5503,7 +5543,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
              prefix = f"{header}\n\n"
              suffix = tail
          truncated_suffix = "\n" + t("platform.discord.prompt.truncated_marker")
@@ -180,7 +180,7 @@ index e4a155574f..3e46e12d5e 100644
          if len(body) > budget:
              body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
          return f"{prefix}{body}{suffix}"
-@@ -5636,6 +5674,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5511,6 +5552,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
      def _approval_mention_content(self) -> Optional[str]:
          """User mentions for approval prompts, gated on ``discord.approval_mentions``
          (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
@@ -189,7 +189,7 @@ index e4a155574f..3e46e12d5e 100644
          if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
              return None
          user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
-@@ -5645,6 +5685,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5520,6 +5563,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
  
      async def _send_prompt(
          self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
@@ -197,7 +197,7 @@ index e4a155574f..3e46e12d5e 100644
      ) -> SendResult:
          """Shared tail for interactive prompts: resolve target channel, call ``build(channel) ->
          (send_kwargs, view)``, send, remember the message on the view. ``fail_log`` labels failures."""
-@@ -5653,6 +5694,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5528,6 +5572,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
          try:
              channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
              send_kwargs, view = build(channel)
@@ -210,9 +210,9 @@ index e4a155574f..3e46e12d5e 100644
 +                send_kwargs["content"] = content
 +                send_kwargs.update(mention_kwargs)
              if view is not None:
-                 view.live_auth = self._component_live_auth
-             msg = await channel.send(**send_kwargs)
-@@ -5729,7 +5778,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+                 view.live_auth, view.answer_extra = self._component_live_auth, getattr(self.config, "extra", None) or {}
+                 view.current_gates = self._current_gate_sets
+@@ -5603,7 +5655,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                          users=True, roles=False, everyone=False, replied_user=False,
                      )
              return send_kwargs, view
@@ -221,7 +221,7 @@ index e4a155574f..3e46e12d5e 100644
          if result.success and view.pending_retire:
              await view.retire(view.pending_retire)
          return result
-@@ -5768,7 +5817,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5642,7 +5694,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                  allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
              )
              return {"content": content, "embed": embed, "view": view}, view
@@ -230,7 +230,7 @@ index e4a155574f..3e46e12d5e 100644
  
      async def send_clarify(
          self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
-@@ -5818,7 +5867,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5700,7 +5752,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
              if view:
                  send_kwargs["view"] = view
              return send_kwargs, view
@@ -239,7 +239,7 @@ index e4a155574f..3e46e12d5e 100644
  
      async def send_update_prompt(
          self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
-@@ -5838,7 +5887,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
+@@ -5720,7 +5772,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
              )
              content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
              return {"content": content, "embed": embed, "view": view}, view
