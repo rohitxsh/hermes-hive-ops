@@ -86,6 +86,20 @@ def actions_line():
     return line
 
 
+MODEL_NAMES = {"fable": "Fable/Mythos"}  # the provider bills Mythos 5.2 under the Fable weekly limit
+
+
+def model_windows(windows):
+    """(title, label) for each model-scoped window (separate per-model limits, e.g. Fable weekly)."""
+    out = []
+    for w in windows or []:
+        model = w.get("model")
+        if model and w.get("label"):
+            period = w["label"].split()[-1] if " " in w["label"] else w["label"]
+            out.append((f"{MODEL_NAMES.get(model, model.title())} {period}", w["label"]))
+    return out
+
+
 def main():
     with ThreadPoolExecutor(max_workers=2) as pool:
         codex = pool.submit(fetch, "openai-codex")
@@ -103,13 +117,31 @@ def main():
             labels = [("limit", "limit")]
         for title, label in labels:
             print(f"- **{name} {title}:** {metric(windows, label, now)}")
+        for title, label in model_windows(windows):  # e.g. Fable weekly: Mythos's separate weekly limit
+            print(f"- **{name} {title}:** {metric(windows, label, now)}")
     actions = actions_line()
     if actions:
         print(actions)
-    full = [name for name, windows in readings if any((w.get("used") or 0) >= 100 for w in windows or [])]
+    full = [name for name, windows in readings
+            if any((w.get("used") or 0) >= 100 for w in windows or [] if not w.get("model"))]
     if full:  # a reset can sometimes be claimed on the provider's account page before the scheduled one
         print(f"- ⚠️ **{' and '.join(full)} at 100%:** check whether a limit reset is available for the account.")
+    for name, windows in readings:
+        for title, label in model_windows(windows):
+            w = next(x for x in windows if x.get("label") == label)
+            if (w.get("used") or 0) >= 100:
+                print(f"- ⚠️ **{name} {title} at 100%:** only that model waits for its reset; other {name} models "
+                      "keep running.")
+
+
+def selftest():
+    ws = [{"label": "5-hour", "used": 10}, {"label": "weekly", "used": 56},
+          {"label": "Fable weekly", "used": 100, "model": "fable"}]
+    assert model_windows(ws) == [("Fable/Mythos weekly", "Fable weekly")]
+    assert model_windows([{"label": "weekly", "used": 5}]) == [] and model_windows(None) == []
+    assert model_windows([{"label": "Opus weekly", "used": 1, "model": "opus"}]) == [("Opus weekly", "Opus weekly")]
+    print("selftest ok")
 
 
 if __name__ == "__main__":
-    main()
+    selftest() if "--selftest" in sys.argv else main()
