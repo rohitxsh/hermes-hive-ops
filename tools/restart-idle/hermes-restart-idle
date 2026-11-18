@@ -228,6 +228,23 @@ def main():
     if systemctl("is-active", "agent-worker@dashboard").stdout.strip() == "active":
         systemctl("restart", "agent-worker@dashboard")
     log(f"gateway pid {old} -> {main_pid()}, {systemctl('is-active', UNIT).stdout.strip()}" + (", webui restarted" if a.webui else ""))
+    restore_extras()
+
+
+def restore_extras():
+    """A local patch or update changes Hermes's source, so the restarted gateway builds a new managed venv without our
+    document/chart extras (self-check found them missing three times). Reinstall them as the owner once it is up."""
+    script = os.path.join(os.path.dirname(HERMES_DIR), "agents/src/venv-extras-restore.sh")
+    if not os.path.exists(script):
+        return
+    owner = pwd.getpwuid(os.stat(script).st_uid).pw_name
+    time.sleep(120)  # the managed bootstrap runs at gateway start
+    cmd = ["bash", script] if os.geteuid() == pwd.getpwnam(owner).pw_uid else ["runuser", "-u", owner, "--", "bash", script]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        log(f"venv extras restore exit {r.returncode}: {((r.stdout or r.stderr).strip().splitlines() or [''])[-1]}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"venv extras restore failed: {e}")
 
 
 if __name__ == "__main__":

@@ -72,7 +72,8 @@ step_plugins() {  # every kit plugin into every profile's plugins/ (enabling hap
   done
 }
 step_patches() {  # local fixes to Hermes; re-run this step after every `hermes update`
-  run rm -rf "$SRC/hermes-local-patches"; run cp -r "$KIT/patches" "$SRC/hermes-local-patches"   # the self-check re-verifies them from here
+  # copy over, never wipe: the VM assistant keeps its own fixes and their receipts in this folder (self-check re-verifies from here)
+  run mkdir -p "$SRC/hermes-local-patches"; run cp -r "$KIT/patches/." "$SRC/hermes-local-patches/"
   for p in "$KIT"/patches/*-apply.py; do echo "  $(basename "$p")"; [ "$DRY" = 1 ] || (cd /tmp && "$HPY" "$p" | tail -1) || echo "  ! $(basename "$p") did not apply: check it against your Hermes version"; done
 }
 step_skills() {  # kit skills: shared ones for every non-locked profile through skills.external_dirs
