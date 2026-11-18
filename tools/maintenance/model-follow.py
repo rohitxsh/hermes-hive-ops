@@ -275,7 +275,7 @@ def main():
                 ok = codex_answers(new)
             else:
                 try:
-                    ok = bool(openai_call(key, "responses", {"model": new, "input": "Reply ok", "max_output_tokens": 16}))
+                    ok = openai_call(key, "responses", {"model": new, "input": "Reply ok", "max_output_tokens": 16}).get("status") == "completed"
                 except Exception:
                     ok = False
             if ok:
@@ -325,7 +325,8 @@ def main():
         subprocess.run([f"{H}/.local/bin/hermes", "ops-rules", "apply"], capture_output=True, timeout=300)
     announce(moves, len(files))
     subprocess.run(["sudo", "-n", "systemd-run", "--unit", f"hermes-restart-idle-{int(datetime.datetime.now().timestamp())}",
-                    "--collect", f"{H}/.local/bin/hermes-restart-idle", "--max-wait", "21600"], capture_output=True)
+                    "--collect", f"{H}/.local/bin/hermes-restart-idle", "--max-wait", "21600",
+                    "--max-wait-kanban", "21600"], capture_output=True)
 
 
 if __name__ == "__main__":
