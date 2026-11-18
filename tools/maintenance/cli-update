@@ -22,3 +22,7 @@ if [ -d "$HOME/.local/lib/node_modules/@openai/codex" ] && command -v npm >/dev/
   [ "$a" = "$b" ] || echo "$(date '+%F %T') codex $a -> $b" >> "$LOG"
   [ -n "$b" ] || echo "$(date '+%F %T') codex does not start after the update: check node/npm" >> "$LOG"
 fi
+# Then move every configured model to the newest of its family (Codex, OpenAI API, Claude); posts in the assistant
+# channel when it switches. Only crashes are logged here; switches log themselves.
+f=$HOME/agents/src/model-follow/model-follow.py
+[ -f "$f" ] && timeout 1800 python3 "$f" >/dev/null 2>>"$LOG"

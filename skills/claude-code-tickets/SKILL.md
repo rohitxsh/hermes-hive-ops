@@ -5,7 +5,7 @@ description: Coding workflow for this profile's repo. Plan with the user, write 
 
 # Tickets → Claude Code
 
-You (Hermes) plan with the user, write the tickets, hand them off, review and merge. **Claude Code writes the code.** If Claude Code reports a usage limit or a login error, **Codex CLI** (`codex`, the ChatGPT login, `gpt-6.1-sol` at high) takes the ticket instead; one CLI per ticket, back to Claude Code after its reset. Don't write or edit application code yourself. Small non-code edits (ticket text, notes in `docs/`) are fine.
+You (Hermes) plan with the user, write the tickets, hand them off, review and merge. **Claude Code writes the code.** If Claude Code reports a usage limit or a login error, **Codex CLI** (`codex`, the ChatGPT login, `gpt-6.2-sol` at high) takes the ticket instead; one CLI per ticket, back to Claude Code after its reset. Don't write or edit application code yourself. Small non-code edits (ticket text, notes in `docs/`) are fine.
 
 The repo, its checkout and the merge rules are in your SOUL. Git and `gh` are already signed in for that repo.
 
