@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -89,25 +90,37 @@ def selftest():
         shutil.rmtree(d)
 
 
+def free_bytes():
+    st = os.statvfs(WS)
+    return st.f_bavail * st.f_frsize
+
+
 def main():
     if not os.path.isdir(WS) or not os.path.exists(DB):
         return
+    # Deleting tens of GB at full speed stalled the gateway's event loop for >10 s and it lost its running workers
+    # (19 Nov): run at idle I/O and CPU priority, one folder at a time with a pause between, and don't walk sizes.
+    try:
+        os.nice(19)
+        subprocess.run(["ionice", "-c3", "-p", str(os.getpid())], capture_output=True)
+    except OSError:
+        pass
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     items = plan(conn, WS, time.time())
-    freed = 0
+    before, removed = free_bytes(), 0
     for p, why in items:
         if "--dry-run" in sys.argv:
             print(f"would remove {p.replace(H, '~')} ({why}, {size(p) / 1e9:.1f} GB)")
             continue
-        n = size(p)
-        os.system(f"chmod -R u+rwX '{p}' 2>/dev/null")  # tests leave 0700/0500 folders that block removal
+        subprocess.run(["chmod", "-R", "u+rwX", p], capture_output=True)  # tests leave 0700/0500 folders
         shutil.rmtree(p, ignore_errors=True)
-        if not os.path.exists(p):
-            freed += n
-    if freed:  # removed worktrees leave stale entries in their main checkouts
+        removed += not os.path.exists(p)
+        time.sleep(2)
+    freed = free_bytes() - before
+    if removed:  # removed worktrees leave stale entries in their main checkouts
         for git in glob.glob(f"{H}/work/*/.git") + glob.glob(f"{H}/work/*/*/.git"):
-            os.system(f"git -C '{os.path.dirname(git)}' worktree prune >/dev/null 2>&1")
-        print(f"{time.strftime('%F %T')} workspace-clean freed {freed / 1e9:.1f} GB ({len(items)} folders)")
+            subprocess.run(["git", "-C", os.path.dirname(git), "worktree", "prune"], capture_output=True)
+        print(f"{time.strftime('%F %T')} workspace-clean freed {max(freed, 0) / 1e9:.1f} GB ({removed} folders)")
 
 
 if __name__ == "__main__":
