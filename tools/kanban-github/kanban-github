@@ -34,6 +34,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 
 H = os.path.expanduser("~")
@@ -484,6 +485,18 @@ def main(args):
             url = gh(*args_).strip().splitlines()[-1]
             n = int(url.rsplit("/", 1)[1])
             mp[c["id"]], mp[f"created:{c['id']}"], mp[f"init:{c['id']}"] = n, True, True
+            # Keep the acknowledged issue even if a later notice or project call fails.
+            # Replace in the same directory so map readers see a complete snapshot.
+            checkpoint = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=D,
+                                                 prefix=".map-create-", delete=False) as out:
+                    checkpoint = out.name
+                    json.dump(mp, out, indent=1)
+                os.replace(checkpoint, f"{D}/map.json")
+            finally:
+                if checkpoint is not None and os.path.exists(checkpoint):
+                    os.unlink(checkpoint)
             created = True
             changed += 1
             print(f"created #{n}: {d['title'][:80]}")
