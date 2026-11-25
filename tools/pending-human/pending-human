@@ -20,10 +20,42 @@ import time
 
 H = os.path.expanduser("~")
 CONFIG = f"{H}/agents/pending-human/config.json"   # {"<profile>": ["<owner/repo>", "<discord guild id>"], ...}
-REPOS = {k: tuple(v) for k, v in (json.load(open(CONFIG)) if os.path.exists(CONFIG) else {}).items()}
+COMBINED_REVIEW = f"{H}/agents/pending-human/combined-review.json"
+if os.path.exists(CONFIG):
+    with open(CONFIG, encoding="utf-8") as config:
+        REPOS = {k: tuple(v) for k, v in json.load(config).items()}
+else:
+    REPOS = {}
 LOOP_HELD = """(select e.kind from task_events e where e.task_id = t.id and e.kind in
     ('block_loop_detected', 'promoted', 'specified', 'decomposed', 'created') order by e.created_at desc, e.id desc limit 1)
     = 'block_loop_detected'"""
+
+
+def combined_review(cards, reasons):
+    """Consolidate one explicitly bound pair, only while both exact recorded waits are current."""
+    try:
+        with open(COMBINED_REVIEW, encoding="utf-8") as f:
+            binding = json.load(f)
+        if not isinstance(binding, dict):
+            return cards
+        companion, canonical, display = (binding.get(k) for k in ("companion", "canonical", "display_reason"))
+        keys = ("id", "status", "assignee", "reason")
+        if not all(isinstance(r, dict) and all(isinstance(r.get(k), str) and r[k] for k in keys)
+                   and r["status"] == "scheduled" for r in (companion, canonical)):
+            return cards
+        if (companion["id"] == canonical["id"] or not companion["reason"].startswith("EXTERNAL_EVENT_WAIT:")
+                or not canonical["reason"].startswith("waiting on ") or not isinstance(display, str)
+                or not display.startswith("waiting on ") or len(display) > 250):
+            return cards
+    except (OSError, ValueError):
+        return cards
+    by_id = {c["id"]: c for c in cards}
+    if not all(r["id"] in by_id and reasons[r["id"]] == r["reason"]
+               and all(by_id[r["id"]][k] == r[k] for k in keys[:-1])
+               for r in (companion, canonical)):
+        return cards
+    by_id[canonical["id"]]["reason"] = display + "\n" + canonical["reason"][:700]
+    return [c for c in cards if c["id"] != companion["id"]]
 
 
 def waiting_cards(db, now):
@@ -31,11 +63,11 @@ def waiting_cards(db, now):
     rows = c.execute(f"""select t.id, t.status, t.assignee, t.title, coalesce(t.block_kind, ''),
         (select max(created_at) from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')),
         (select payload from task_events e where e.task_id = t.id and e.kind in ('blocked', 'block_loop_detected', 'scheduled')
-         order by created_at desc limit 1)
+         order by created_at desc, id desc limit 1)
         from tasks t where t.status in ('blocked', 'scheduled') or (t.status = 'triage' and {LOOP_HELD})
         order by 6""").fetchall()
     c.close()
-    out = []
+    out, reasons = [], {}
     for tid, status, who, title, kind, since, payload in rows:
         if kind in ("dependency", "transient") and status != "scheduled":
             continue   # a parked card keeps a stale block_kind from an earlier block; its reason says what it waits on
@@ -43,9 +75,10 @@ def waiting_cards(db, now):
             reason = (json.loads(payload or "{}") or {}).get("reason") or ""
         except ValueError:
             reason = ""
+        reasons[tid] = reason
         out.append({"id": tid, "status": status, "assignee": who, "title": title, "kind": kind,
                     "waiting_hours": round((now - since) / 3600, 1) if since else None, "reason": reason[:700]})
-    return out
+    return combined_review(out, reasons)
 
 
 PR_FIELDS = "number,title,url,labels,reviewDecision,isDraft,updatedAt,headRefOid,statusCheckRollup"

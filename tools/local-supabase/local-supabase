@@ -4,6 +4,7 @@
 #   local-supabase start <repo-dir>   start on a helper-owned loopback bridge; RAM minimum 3000 MB
 #   local-supabase status <repo-dir>  allowlisted local API/public key/mailbox fields (JSON; no privileged keys)
 #   local-supabase code <email>       newest synthetic 6-digit code from the loopback test mailbox
+#   local-supabase run <repo-dir> -- <cmd...>  run cmd (e.g. supabase/scripts/check.sh, db reset) on the owned network
 #   local-supabase stop <repo-dir>    stop only the owned stack and delete its disposable volumes/network
 #   local-supabase --selftest
 set -euo pipefail
@@ -13,7 +14,7 @@ MIN_MB=${LOCAL_SUPABASE_MIN_MB:-3000}
 MAILPIT=${LOCAL_SUPABASE_MAILPIT:-http://127.0.0.1:54324}
 cmd=${1:-}; arg=${2:-}
 running() { docker ps -a --format '{{.Names}}' | grep -E '^supabase_' || true; }
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 identity() {
   [ -n "$arg" ] && [ -f "$arg/supabase/config.toml" ] || { echo 'repo supabase/config.toml missing' >&2; exit 2; }
   arg=$(realpath "$arg")
@@ -88,6 +89,20 @@ print(codes[0])
 PY
 }
 case "$cmd" in
+  run)
+    # Supabase CLI commands that recreate containers (db reset) default to supabase_network_<project>,
+    # published on 0.0.0.0. SUPABASE_NETWORK_ID (read by the CLI) keeps them on the owned loopback bridge.
+    identity; shift 2
+    [ "${1:-}" = -- ] && shift
+    [ $# -gt 0 ] || { usage; exit 2; }
+    owned || exit 5
+    check_ports || exit 6
+    rc=0; SUPABASE_NETWORK_ID="$network" "$@" || rc=$?
+    if ! owned || ! check_ports; then
+      echo 'local-supabase run: stack left the owned loopback network; stop it with the supabase CLI and docker network rm' >&2
+      exit 7
+    fi
+    exit "$rc" ;;
   start|stop|status)
     identity
     # Serialize this helper's lifecycle; native CLI users must still coordinate the shared VM slot.
@@ -103,7 +118,10 @@ case "$cmd" in
         # Refuse reuse: a failed prior run must be stopped with its original repo/config first.
         docker network create --driver bridge --label "local-supabase.repo=$arg" --label "local-supabase.project=$project" --opt com.docker.network.bridge.host_binding_ipv4=127.0.0.1 "$network" >/dev/null
         if supabase start --workdir "$arg" --network-id "$network" -x "$EXCLUDE" >/dev/null; then
-          if check_ports; then exit 0; fi
+          if check_ports; then
+            echo "local-supabase: run db reset or check.sh via 'local-supabase run $arg -- <cmd>' so containers stay on the loopback network" >&2
+            exit 0
+          fi
         fi
         echo 'start/port validation failed; cleaning only the owned disposable stack' >&2
         stop_owned

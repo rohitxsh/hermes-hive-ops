@@ -6,10 +6,9 @@ re-parked with a new reason: only a new "scheduled" event is written (no run, st
 unaffected: their kanban_schedule passes their run id, and that path is unchanged.
 Idempotent; `--check` only reports; `--test` runs a functional self-test on a temporary board with Hermes's venv
 python. Re-run after `hermes update`."""
-import os
-import shutil
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path.home() / ".hermes/hermes-agent"
@@ -34,13 +33,13 @@ NEW = ('            params.append(int(expected_run_id))\n'
 
 
 def selftest():
-    home = tempfile.mkdtemp(prefix="kb-resched-")
-    os.environ["HERMES_HOME"] = home
     sys.path.insert(0, str(ROOT))
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    try:
-        with kbc.connect() as conn:
+    # The board is shared across profile homes. Pin a new database explicitly,
+    # regardless of inherited board selection, and close it before cleaning up.
+    with tempfile.TemporaryDirectory(prefix="kb-resched-") as tmp:
+        with closing(kbc.connect(db_path=Path(tmp) / "kanban.db")) as conn:
             t = kb.create_task(conn, title="x", assignee="ops")
             assert kb.schedule_task(conn, t, reason="first") is True
             assert kb.schedule_task(conn, t, reason="second SCHEDULED_UNTIL=2030-01-01") is True   # the fix
@@ -51,9 +50,7 @@ def selftest():
             assert kb.schedule_task(conn, t, reason="") is False                 # no reason: unchanged refusal
             assert kb.schedule_task(conn, t, reason="w", expected_run_id=1) is False  # worker path unchanged
             assert kb.schedule_task(conn, "t_missing0", reason="r") is False
-        print("selftest ok 6 cases")
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
+    print("selftest ok 6 cases")
 
 
 s = F.read_text(encoding="utf-8")

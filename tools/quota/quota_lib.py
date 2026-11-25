@@ -44,6 +44,7 @@ WEEKLY_CAP = 80.0        # % of the second provider's weekly windows that auto m
 NO_CAPS = os.path.exists(os.path.join(HOME, "agents", "quota-no-caps"))
 WRAP_MARGIN = 10.0       # points before a pause point at which scheduled work is told to wrap up
 FAIL_WINDOW = 3600       # seconds a provider Hermes gave up on in a profile counts as used up there
+REJECT_WINDOW = 4 * 3600  # seconds a login that refuses the profile's configured model (e.g. a lapsed plan) counts as used up
 EXHAUSTED = 99.5         # a window at or above this is used up
 ALL_MODES = False        # machine caps apply with auto mode off too (quota-caps.json "all_modes")
 
@@ -411,8 +412,13 @@ def claude_code_allowed(auto, getu):
 _FAIL = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ .*?(?:Fallback to (\S+) failed|API call failed after \d+ retries\..*\| provider=(\S+))")
 
 
+_REJECT = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ .*Model entitlement rejection: this account is not entitled to (\S+) via (\S+?);")
+
+
 def recent_failures(home, now=None):
-    """{provider: time} of providers Hermes gave up on in this profile within FAIL_WINDOW (from its agent.log)."""
+    """{provider: time} of providers Hermes gave up on in this profile within FAIL_WINDOW (from its agent.log).
+    A provider that refused the profile's configured model counts for REJECT_WINDOW instead, as if it failed just now:
+    its usage reads 0%, so nothing else would show that it can't answer. Changing the model clears it."""
     now = now or time.time()
     path = os.path.join(home, "logs", "agent.log")
     try:
@@ -421,8 +427,21 @@ def recent_failures(home, now=None):
             lines = fh.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return {}
-    out = {}
+    out, models = {}, None
     for line in lines:
+        m = _REJECT.match(line)
+        if m:
+            t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            if models is None:
+                try:
+                    cfg = load_config(home)
+                except (OSError, ImportError):
+                    cfg = {}
+                models = {(e.get("provider"), e.get("default") or e.get("model"))
+                          for e in [cfg.get("model") or {}] + list(cfg.get("fallback_providers") or []) if isinstance(e, dict)}
+            if now - t < REJECT_WINDOW and (m.group(3), m.group(2)) in models:
+                out[m.group(3)] = now if now - t >= FAIL_WINDOW else max(out.get(m.group(3), 0.0), t)
+            continue
         m = _FAIL.match(line)
         if m:
             t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
@@ -573,6 +592,20 @@ def selftest():
                  f"{stamp},2 ERROR [x] agent.conversation_loop: API call failed after 3 retries. HTTP 429: limit | provider=claude-x model=m\n"
                  "2020-01-01 00:00:00,0 ERROR agent.conversation_loop: API call failed after 3 retries. HTTP 402 | provider=nous model=m\n")
     assert set(recent_failures(home)) == {"openai-codex", "claude-x"}
+    two_h = time.time() + 2 * 3600                          # an entitlement refusal outlasts FAIL_WINDOW, for the configured model only
+    with open(os.path.join(home, "logs", "agent.log"), "a") as fh:
+        fh.write("".join(f"{stamp},3 WARNING [x] agent.fallback_cooldown: Model entitlement rejection: this account is not entitled to "
+                         f"{m} via {p}; treating it as unavailable for this session\n" for m, p in (("m1", "codex-y"), ("m-old", "codex-z"))))
+    with open(os.path.join(home, "config.yaml"), "w") as fh:
+        fh.write("model: {provider: codex-y, default: m1}\nfallback_providers: [{provider: codex-z, model: m-new}]\n")
+    try:
+        __import__("yaml")
+    except ImportError:
+        pass
+    else:
+        assert set(recent_failures(home, two_h)) == {"codex-y"} and not recent_failures(home, two_h + REJECT_WINDOW)
+        assert used_up(profile_usage(home, fake({}), two_h)("codex-y"))
+    os.remove(os.path.join(home, "config.yaml"))
     pu = profile_usage(home, fake({"claude": ok}))
     assert used_up(pu("openai-codex")) and not used_up(pu("claude-y"))
     assert not run_allowed(["claude-x", "openai-codex", "nous"], False, pu)[0]       # both failing here: pause before the third
