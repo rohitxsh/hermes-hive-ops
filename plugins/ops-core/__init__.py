@@ -359,6 +359,8 @@ def _auto_mode_section(info) -> str:
 def register(ctx) -> None:
     if hasattr(ctx, "register_system_prompt_section"):   # Hermes >= 0.23.0
         ctx.register_system_prompt_section("ops-core.auto-mode", _auto_mode_section, max_chars=200)
+    if hasattr(ctx, "register_redaction_patterns"):   # Supabase tokens, which Hermes's built-in list lacks
+        ctx.register_redaction_patterns([r"sbp_[A-Za-z0-9_]{20,}", r"sb_secret_[A-Za-z0-9_-]{20,}"])
     ctx.register_cli_command("ops-rules", "Shared SOUL rules: apply, check or show", _cli_setup, _cli)
     ctx.register_cli_command("ops", "Run an ops kit tool: " + ", ".join(sorted(TOOLS)), _ops_setup, _ops)
     ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
