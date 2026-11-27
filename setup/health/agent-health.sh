@@ -81,6 +81,8 @@ for b in "$HOME"/.local/bin/*; do
 done
 # disk space
 use=$(df --output=pcent "$HOME" | tail -1 | tr -dc 0-9); [ "${use:-0}" -ge 85 ] && p+=("home filesystem is ${use}% full")
+# fast growth is the early warning (the 85% line comes too late): workspace-clean samples disk use every 6 h
+wc="$HOME/agents/src/workspace-clean/workspace-clean.py"; [ -f "$wc" ] && { g=$(python3 "$wc" --growth 2>/dev/null); [ -z "$g" ] || p+=("$g"); }
 # second brain
 [ -d "$HOME/brain" ] && { git -C "$HOME/brain" rev-parse >/dev/null 2>&1 || p+=("~/brain exists but is not a git repository"); }
 # document libraries for the docx/xlsx/powerpoint/pdf skills
