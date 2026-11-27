@@ -190,7 +190,7 @@ def confirmed_clean_schedule(db, tid):
             event_kind = 'blocked'
         else:
             return False
-        parked = c.execute("""select created_at,payload from task_events where task_id=? and run_id=?
+        parked = c.execute("""select created_at,payload,id from task_events where task_id=? and run_id=?
             and kind=? order by created_at desc,id desc limit 1""", (tid, rid, event_kind)).fetchone()
         if event_kind == 'blocked':
             data = json.loads(parked[1]) if parked else None
@@ -202,10 +202,21 @@ def confirmed_clean_schedule(db, tid):
             if (not isinstance(data, dict) or data.get('kind') != 'dependency'
                     or data.get('source_status') not in ('ready', 'review')):
                 return False
-        result = c.execute("""select created_at,payload from task_events where task_id=? and run_id=?
+        result = c.execute("""select created_at,payload,id from task_events where task_id=? and run_id=?
             and kind='worker_result' order by created_at desc,id desc limit 1""", (tid, rid)).fetchone()
-        if not parked or not result or not parked[0] <= ended <= result[0]:
+        if not parked or not result:
             return False
+        if not parked[0] <= ended <= result[0]:
+            # Native schedule_task closes the run and appends the event in one
+            # transaction, with separate integer wall-clock samples. Recognize
+            # a one-second rollover only with later same-run exit and no claim.
+            if (event_kind != 'scheduled'
+                    or not all(type(value) is int for value in (parked[0], ended, result[0]))
+                    or parked[0] != ended + 1 or result[0] < parked[0]
+                    or result[2] <= parked[2]
+                    or not c.execute("""select 1 from tasks where id=?
+                        and current_run_id is null and claim_lock is null and worker_pid is null""", (tid,)).fetchone()):
+                return False
         payload = json.loads(result[1])
         return isinstance(payload, dict) and type(payload.get('exit_code')) is int and payload['exit_code'] == 0
     except (sqlite3.Error, OSError, ValueError, TypeError):

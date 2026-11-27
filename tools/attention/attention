@@ -517,11 +517,14 @@ def pr_verdict(d, since, owner, agents=(), gate_labels=("human-signoff",)):
 
 
 UNTIL = re.compile(r"SCHEDULED_UNTIL=(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?(?:Z|[+-]\d{2}:?\d{2})?)")
+SHARED_LOCAL_CI_SLOT = re.compile(
+    r"^waiting for the shared (?:(?:heavy )?local ci slot\b|heavy[ -]test slot"
+    r"(?:, not for human approval\.| now held by the existing PR #[1-9][0-9]* run, not human approval\.))", re.I
+)
 
 
-def until_due(reason, now=None):
-    """The SCHEDULED_UNTIL=<ISO time> an agent wrote in its park reason, if that time has passed (else None).
-    Hermes has no timed wake, so without this a card parked "until" a time stayed parked forever."""
+def scheduled_until(reason):
+    """Parse the park's timer, preserving its literal stamp for the wake receipt."""
     m = UNTIL.search(reason or "")
     if not m:
         return None
@@ -530,8 +533,17 @@ def until_due(reason, now=None):
     except ValueError:
         return None
     when = when if when.tzinfo else when.astimezone()  # no offset: local time
+    return m.group(1), when
+
+
+def until_due(reason, now=None):
+    """The park's SCHEDULED_UNTIL stamp, if its time has passed (else None)."""
+    timer = scheduled_until(reason)
+    if timer is None:
+        return None
+    stamp, when = timer
     now = now or dt.datetime.now(dt.timezone.utc)
-    return m.group(1) if now >= when else None
+    return stamp if now >= when else None
 
 
 QUOTA_WAIT = re.compile(r"quota|usage limit|weekly limit|fable limit|limit reset|usage credits|auto-mode cap|usage reset|"
@@ -641,6 +653,11 @@ def pr_resume():
                 done[t["id"]], used[t["id"]] = t["since"], f"quota {now_s}"
                 active[t.get("model") or ""] = active.get(t.get("model") or "", 0) + 1
                 print(f"🔋 {t['id']} ({t['who']}) resumed: {back}")
+            continue
+        # A timed shared Local CI slot wait names PRs as queue context, not wake conditions.
+        # Also keep it out of this branch when the same timer has already been consumed.
+        reason = t["reason"] or ""
+        if t["status"] == "scheduled" and SHARED_LOCAL_CI_SLOT.match(reason) and scheduled_until(reason):
             continue
         # only the PR the wait names (reason or title): a PR merely mentioned in the body or comments woke unrelated cards
         prs = pr_refs(" ".join([t["title"] or "", t["reason"] or ""]), t["reason"],
