@@ -31,6 +31,7 @@ LOG = os.path.join(HERMES_DIR, "logs", "restart-idle.log")
 UNIT = "agent-worker@hermes"
 QUIET = 30
 CRON_LEAD = 90
+CLAIM_STALE = 6 * 3600   # a claimed/running execution older than this is a leftover, not a live run
 
 
 def log(msg):
@@ -96,7 +97,24 @@ def cron_busy(now, homes=None):
                 nxt = j.get("next_run_at")
                 if nxt and -60 <= datetime.datetime.fromisoformat(nxt).timestamp() - now <= CRON_LEAD:
                     n += 1
-        except (OSError, ValueError, TypeError, AttributeError):
+            # Runs the scheduler already claimed (next_run_at moved on) but whose worker hasn't written its
+            # admission journal yet: a restart in that ~15 s gap kills the worker (2026-11-27, cb4c22/35175a).
+            agent_ids = {j.get("id") for j in jobs if not j.get("no_agent")}
+            ex = os.path.join(home, "cron", "executions.db")
+            if os.path.exists(ex) and agent_ids:
+                con = sqlite3.connect(f"file:{ex}?mode=ro", uri=True, timeout=5)
+                try:
+                    rows = con.execute("select job_id, claimed_at from executions "
+                                       "where status in ('claimed', 'running')").fetchall()
+                finally:
+                    con.close()
+                for job_id, claimed in rows:
+                    if job_id in agent_ids and now - datetime.datetime.fromisoformat(claimed).timestamp() <= CLAIM_STALE:
+                        n += 1
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                return None
+        except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
             return None
     return n
 
@@ -177,6 +195,19 @@ def selftest():
         json.dump({"jobs": [{"id": "later", "next_run_at": iso(600)}]}, open(os.path.join(d, "cron", "jobs.json"), "w"))
         os.unlink(os.path.join(d, "cron", "admissions", "x.json"))
         assert cron_busy(now, [d]) == 0
+        # claimed by the scheduler, admission not written yet: busy; script jobs and stale leftovers are not
+        json.dump({"jobs": [{"id": "later", "next_run_at": iso(600)}, {"id": "script", "no_agent": True}]},
+                  open(os.path.join(d, "cron", "jobs.json"), "w"))
+        c = sqlite3.connect(os.path.join(d, "cron", "executions.db"))
+        c.execute("create table executions (id, job_id, status, claimed_at)")
+        c.execute("insert into executions values ('a', 'later', 'running', ?)", (iso(-5),))
+        c.execute("insert into executions values ('b', 'script', 'running', ?)", (iso(-5),))
+        c.execute("insert into executions values ('c', 'later', 'running', ?)", (iso(-CLAIM_STALE - 60),))
+        c.execute("insert into executions values ('d', 'later', 'completed', ?)", (iso(-5),))
+        c.commit(); c.close()
+        assert cron_busy(now, [d]) == 1
+        c = sqlite3.connect(os.path.join(d, "cron", "executions.db")); c.execute("update executions set status = 'completed'"); c.commit(); c.close()
+        assert cron_busy(now, [d]) == 0
         open(os.path.join(d, "cron", "jobs.json"), "w").write("{broken")
         assert cron_busy(now, [d]) is None
     print("hermes-restart-idle selftest ok")
@@ -222,6 +253,11 @@ def main():
         new = main_pid()
         if new not in (old, "", "0"):
             break
+    else:
+        # The graceful exit can hang after the drain (2026-11-27: a gateway started mid-update ran old code and never
+        # exited). Nothing is running by now, so a plain restart loses nothing.
+        log(f"gateway pid {old} still running 600 s after SIGUSR1: hard restart")
+        systemctl("restart", UNIT)
     if a.webui and systemctl("is-enabled", "agent-worker@webui").stdout.strip() == "enabled":  # never revive a removed WebUI
         systemctl("restart", "agent-worker@webui")
     # the dashboard is a Hermes process too: without this it keeps serving pre-update code
