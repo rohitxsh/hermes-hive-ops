@@ -13,10 +13,16 @@ from pathlib import Path
 F = Path.home() / ".hermes/hermes-agent/hermes_cli/kanban_db_dispatch.py"
 TAG = ".bak-2026-11-05-staleauth"
 MARK = "local patch (2026-11-05): an error left by an older run is stale"
-PAIRS = [
+ENDED = '("crashed", "completed", "review_requested", "blocked", "scheduled")'
+# one anchor per Hermes version: v0.23.4 added `and not infrastructure`
+VARIANTS = [
     ('    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):\n',
      f"    # {MARK} once a later run ended normally\n"
-     '    if err and latest_outcome not in ("crashed", "completed", "review_requested", "blocked", "scheduled") \\\n'
+     f'    if err and latest_outcome not in {ENDED} \\\n'
+     "            and _RESPAWN_BLOCKER_RE.search(err):\n"),
+    ('    if err and latest_outcome != "crashed" and not infrastructure and _RESPAWN_BLOCKER_RE.search(err):\n',
+     f"    # {MARK} once a later run ended normally\n"
+     f'    if err and latest_outcome not in {ENDED} and not infrastructure \\\n'
      "            and _RESPAWN_BLOCKER_RE.search(err):\n"),
 ]
 
@@ -25,9 +31,9 @@ if "--check" in sys.argv:
     print("ok" if MARK in s else "missing")
     sys.exit(0 if MARK in s else 1)
 if MARK not in s:
-    for a, b in PAIRS:
-        assert s.count(a) == 1, ("anchor not found once; upstream changed, patch by hand", a[:60])
-        s = s.replace(a, b)
+    hit = [(a, b) for a, b in VARIANTS if s.count(a) == 1]
+    assert len(hit) == 1, "anchor not found once; upstream changed, patch by hand"
+    s = s.replace(*hit[0])
     compile(s, str(F), "exec")
     if not Path(str(F) + TAG).exists():
         shutil.copy2(F, str(F) + TAG)

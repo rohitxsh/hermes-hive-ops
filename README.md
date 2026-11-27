@@ -66,7 +66,7 @@ Each `*-apply.py` is idempotent, keeps a `.bak`, and (where marked) supports `--
 
 After `hermes update`, apply the `.patch` files (`git apply`, from `~/.hermes/hermes-agent`) **before** the `*-apply.py` scripts: `team-notification-here.patch` edits lines in the Discord adapter that `clarify-card-retire-apply.py` also changes, and only that order applies cleanly (the scripts are idempotent and anchor on text the patch leaves intact). `smart-unattended-approvals.patch` is reference only; its script applies it.
 
-Dropped with Hermes v0.23.2 (fixed upstream): `queued-reaction-apply.py` (#153451), `oauth-callback-threads-apply.py` (#135627) and `drain-reply-apply.py` (v0.23.2 replies to messages refused during a restart drain itself).
+Dropped with Hermes v0.23.4 (fixed upstream): `provider-snapshot-home-apply.py` (provider snapshots are kept outside age-pruned temp). Dropped with Hermes v0.23.2 (fixed upstream): `queued-reaction-apply.py` (#153451), `oauth-callback-threads-apply.py` (#135627) and `drain-reply-apply.py` (v0.23.2 replies to messages refused during a restart drain itself).
 
 | Patch | What it fixes | Upstream (NousResearch/hermes-agent) |
 |---|---|---|
@@ -81,7 +81,6 @@ Dropped with Hermes v0.23.2 (fixed upstream): `queued-reaction-apply.py` (#15345
 | `holographic-split-keywords-apply.py` | Third-party holographic memory plugin: the keyword screen also checks the space-joined keywords, so an instruction split across keywords is refused like one in a single keyword. All profile copies. `--check`, `--test`. |
 | `kanban-stale-auth-apply.py` | A quota error left by an older run no longer holds a card forever after a later run ended normally | issue #138618; fix PRs open, e.g. #141740 |
 | `upload-selector-apply.py` | Camofox: reliable file-upload selectors (patches the Camofox server, not Hermes) | Camofox server, not Hermes |
-| `provider-snapshot-home-apply.py` | Provider-plugin snapshots live in `$HERMES_HOME/cache/provider-plugins`, not TMPDIR: where TMPDIR is a pruned scratch folder, a long-running gateway lost its copy of the Claude provider plugin and profiles lost that fallback. `--check` | none yet |
 | `directsdk-lenient-tool-json-apply.py` | Claude subscription (directsdk) plugin: a streamed tool call with raw control characters in its strings is kept instead of failing the request as `error_max_turns`. All profile copies. `--check`, `--test` | plugin, not Hermes; none yet |
 | `camofox-password-mask-apply.py` (+ `camofox-password-mask-test.sh`) | Camofox: accessibility snapshots mask the value of every password input, so a vault-filled password doesn't reach the agent's transcript | Camofox server, not Hermes |
 | `failed-turn-reaction-apply.py` | A failed turn gets a reaction instead of silence | issue #112917 |

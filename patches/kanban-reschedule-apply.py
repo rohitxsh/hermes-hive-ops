@@ -6,6 +6,7 @@ re-parked with a new reason: only a new "scheduled" event is written (no run, st
 unaffected: their kanban_schedule passes their run id, and that path is unchanged.
 Idempotent; `--check` only reports; `--test` runs a functional self-test on a temporary board with Hermes's venv
 python. Re-run after `hermes update`."""
+import shutil
 import sys
 import tempfile
 from contextlib import closing
