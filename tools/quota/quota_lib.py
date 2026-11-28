@@ -413,6 +413,9 @@ _FAIL = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ .*?(?:Fallback to (\S
 
 
 _REJECT = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ .*Model entitlement rejection: this account is not entitled to (\S+) via (\S+?);")
+# The whole account refuses every request (subscription billing, an unfunded API key): no model change helps.
+_BLOCKED = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ .*\bprovider=(\S+) .*(?:OAuth authentication is currently not "
+                      r"allowed|payment is past due|credit balance is too low)")
 
 
 def recent_failures(home, now=None):
@@ -429,6 +432,12 @@ def recent_failures(home, now=None):
         return {}
     out, models = {}, None
     for line in lines:
+        m = _BLOCKED.match(line)
+        if m:  # an account-level refusal (billing): failing for REJECT_WINDOW, whatever model is configured
+            t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            if now - t < REJECT_WINDOW:
+                out[m.group(2)] = now if now - t >= FAIL_WINDOW else max(out.get(m.group(2), 0.0), t)
+            continue
         m = _REJECT.match(line)
         if m:
             t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
@@ -606,6 +615,14 @@ def selftest():
         assert set(recent_failures(home, two_h)) == {"codex-y"} and not recent_failures(home, two_h + REJECT_WINDOW)
         assert used_up(profile_usage(home, fake({}), two_h)("codex-y"))
     os.remove(os.path.join(home, "config.yaml"))
+    blocked = tempfile.mkdtemp()                            # account refused for billing: failing for REJECT_WINDOW
+    os.makedirs(os.path.join(blocked, "logs"))
+    with open(os.path.join(blocked, "logs", "agent.log"), "w") as fh:
+        fh.write(f"{stamp},4 WARNING [x] agent.conversation_loop: API call failed (attempt 1/3, not retryable) error_type=X "
+                 "provider=claude-sub base_url=process://x model=m summary=HTTP 403: upstream said: OAuth authentication is "
+                 "currently not allowed for this organization.\n")
+    assert set(recent_failures(blocked, two_h)) == {"claude-sub"} and not recent_failures(blocked, two_h + REJECT_WINDOW)
+    __import__("shutil").rmtree(blocked)
     pu = profile_usage(home, fake({"claude": ok}))
     assert used_up(pu("openai-codex")) and not used_up(pu("claude-y"))
     assert not run_allowed(["claude-x", "openai-codex", "nous"], False, pu)[0]       # both failing here: pause before the third
